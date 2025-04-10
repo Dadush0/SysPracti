@@ -34,11 +34,11 @@ library(ggdag)
 ```{r}
 ## reading the data
 
-experimental_set_up <- read.csv('Microbial_Physiology_export/Design.csv')
+experimental_set_up <- read.csv('Data/Design.csv')
 
-spectrophotometer<- read.csv('Microbial_Physiology_export/Spectrophotometer.csv')
+spectrophotometer<- read.csv('Data/Spectrophotometer.csv')
 
-turbidostat<- read.csv('Microbial_Physiology_export/Turbidostat.csv')
+turbidostat<- read.csv('Data/Turbidostat.csv')
 ```
 
 ```{r}
@@ -382,7 +382,6 @@ growth_rate_violin
 ggsave("growth_rate_violin.png", plot = growth_rate_violin, width = 7, height = 5, dpi = 300, units = "in")
 ```
 
-
 ```{r}
 technical_variation <- ggplot(ln_OD_table_filtered, aes(x = factor(channel), y = mean_slope_channel, fill = phosphate_mM )) +
   geom_bar(stat = "identity", position = 'dodge') +
@@ -476,8 +475,301 @@ ggplot(combined, aes(x = Chl_A, y = Phy, colour = factor(phosphate_mM))) +
 
 ```
 
+```{r}
+###Read ploidy data
+casy <- read_csv('Data/Casy.csv')
+qpcr <- read_csv('Data/Qpcr.csv')
+
+std_fragment <- readLines('Data/standard_fragment_sequence.txt')
+
+
+###Correct for dilutions
+casy_corrected_dilutions <- casy
+casy_corrected_dilutions$counts_corrected <- casy$counts * (1/(casy_corrected_dilutions$sample_volume/casy_corrected_dilutions$casyton_volume))*casy_corrected_dilutions$sample_dilution*1000/casy_corrected_dilutions$measurement_volume
+
+casy_corrected_dilutions <- casy_corrected_dilutions |>
+  left_join(experimental_set_up, by = "channel")
+#plot of all cells per channel
+
+casy_corrected_dilutions_mc <- casy_corrected_dilutions |>
+  filter(sample_type %in% 'MC')
+
+
+casy_mc_summary <- casy_corrected_dilutions_mc |>
+  group_by(channel) |>
+  summarise(
+    mean_counts = mean(counts_corrected),
+    .groups = "drop"
+  )
+
+ggplot(casy_mc_summary, aes(x = as.factor(channel), y = mean_counts))+
+  geom_bar(stat = 'identity')+
+  theme_minimal()
+
+casy_corrected_dilutions_bbb_abb <- casy_corrected_dilutions |>
+  filter(sample_type %in% c('ABB','BBB'))
+
+casy_bbb_abb_summary <- casy_corrected_dilutions_bbb_abb |>
+  group_by(channel, sample_type) |>
+  summarise(
+    mean_counts = mean(counts_corrected),
+    .groups = "drop"
+  )
+
+ggplot(casy_bbb_abb_summary, aes(x = as.factor(channel), y = mean_counts, fill = sample_type))+
+  geom_bar(stat = 'identity', position = 'dodge')+
+  theme_minimal()
+
+#Calculate number of broken cells
+replicate_counts <- casy_corrected_dilutions_bbb_abb |>
+  select(channel, sample_type, counts_corrected, replicate) |>  # ensure replicate exists
+  pivot_wider(
+    names_from = sample_type,
+    values_from = counts_corrected
+  )
+
+
+broken_cells <- replicate_counts |>
+  group_by(channel) |>
+  summarise(
+    mean_diff = mean(BBB - ABB),
+    var_ABB = var(ABB),
+    var_BBB = var(BBB),
+    cov_AB = cov(ABB, BBB, use = "complete.obs"),
+    sd_diff = sqrt(var_ABB + var_BBB - 2 * cov_AB), #this is error propagation assuming covariance
+    .groups = "drop"
+  )
+
+
+ggplot(broken_cells, aes(x = as.factor(channel), y = mean_diff))+
+  geom_bar(stat = 'identity')
+
+
+lysis_efficiency <- casy_corrected_dilutions_bbb_abb |>
+  select(channel, sample_type, counts_corrected, replicate) |>
+  pivot_wider(names_from = sample_type, values_from = counts_corrected) |>
+  group_by(channel) |>
+  summarise(
+    mean_diff = mean(BBB - ABB),
+    var_ABB = var(ABB),
+    var_BBB = var(BBB),
+    cov_AB = cov(ABB, BBB, use = "complete.obs"),
+    sd_diff = sqrt(var_ABB + var_BBB - 2 * cov_AB),
+    mean_BBB = mean(BBB),  # temporary value used below
+    lysis_efficiency = mean_diff / mean_BBB,
+    .groups = "drop"
+  )
+
+
+ggplot(lysis_efficiency, aes(x = as.factor(channel), y = lysis_efficiency))+
+  geom_bar(stat = 'identity')
+```
+
+```{r}
+
+#Split tables
+qpcr_samples <- qpcr |> filter(sample_class == "sample")
 
 
 
+qpcr_standards <- qpcr|> filter(sample_class == "standard")
+initial_concentration <- 0.04 #ng/ul
+
+avogadro <- 6.023*10^(23)
+qpcr_standards_corrected <- qpcr_standards
+mol_mass_fragment = 670469.73 #g/mol
 
 
+initial_concentration <- initial_concentration * 10^(-9) * avogadro / mol_mass_fragment
+
+qpcr_standards_corrected$dna_conc <- 
+  (initial_concentration/qpcr_standards_corrected$dilution_factor)*(1/(qpcr_standards_corrected$template_vol/qpcr_standards_corrected$final_vol)) #this is in mol/ul
+
+
+```
+
+```{r}
+
+library(broom)
+
+plot_qpcr_with_fit <- function(data, reps = c("1", "2", "3")) {
+  # Filter for selected replicates
+  filtered_data <- data |>
+    filter(as.character(replicate) %in% reps) |>
+    mutate(replicate = as.factor(replicate))
+  
+  #fit single line to log10 of conc
+  model <- lm(Ct ~ log10(dna_conc), data = filtered_data)
+  tidy_fit <- tidy(model)
+  glance_fit <- glance(model)
+  
+  #extraxt values
+  slope <- tidy_fit$estimate[2]
+  intercept <- tidy_fit$estimate[1]
+  r2 <- glance_fit$r.squared
+  E <- 10^(-1 / slope)
+  percent_E <- (E - 1) * 100
+  
+  stats_table <- tibble(
+    replicates_used = paste(reps, collapse = " "),
+    slope = slope,
+    intercept = intercept,
+    R2 = r2,
+    Efficiency = E,
+    Efficiency_percent = percent_E
+  )
+  
+  # Plot with all replicates colored
+  plot <- ggplot(filtered_data, aes(x = log10(dna_conc), y = Ct, color = replicate)) +
+    geom_point(size = 3) +
+    geom_smooth(method = "lm", se = FALSE, color = "black", linetype = "dashed") +
+    scale_color_manual(
+      values = c("1" = "darkseagreen4", "2" = "darkorchid3", "3" = "orangered2"),
+      drop = FALSE
+    ) +
+    labs(
+      x = expression(Log[10]~DNA~concentration~(mol/µL)),
+      y = "Ct value",
+      color = "Replicate",
+      title = paste("qPCR Standard Curve — Reps:", paste(reps, collapse = ", "))
+    ) +
+    theme_minimal()
+  
+  return(list(
+    plot = plot,
+    stats = stats_table
+  ))
+}
+
+library(purrr)
+summarize_qpcr_combinations <- function(data) {
+  combos <- list(
+    "1"     = c("1"),
+    "2"     = c("2"),
+    "3"     = c("3"),
+    "1 2"   = c("1", "2"),
+    "1 3"   = c("1", "3"),
+    "2 3"   = c("2", "3"),
+    "1 2 3" = c("1", "2", "3")
+  )
+
+  stats_list <- list()
+  plot_list <- list()
+  
+  for (name in names(combos)) {
+    reps <- combos[[name]]
+    fit <- plot_qpcr_with_fit(data, reps = reps)
+    
+    stats_list[[name]] <- fit$stats
+    plot_list[[name]] <- fit$plot
+  }
+  
+  #combine stats
+  stats_table <- bind_rows(stats_list, .id = "replicate_combo")
+
+  return(list(
+    stats = stats_table,
+    plots = plot_list
+  ))
+}
+
+
+qpcr_summary_std <- summarize_qpcr_combinations(qpcr_standards_corrected)
+qpcr_summary_std$stats
+qpcr_summary_std$plots
+
+r2_summary <- ggplot(qpcr_summary_std$stats, aes(x = replicates_used, y = R2))+
+  geom_point(color = 'midnightblue')+
+  theme_minimal()+
+  scale_y_continuous(limits = c(0.98,1))+
+  geom_hline(yintercept = 0.99, color = 'firebrick3')+
+    theme(
+    axis.text.x = element_text(angle = 90, hjust = 1)
+  )+
+  labs(
+    x = "Replicates used",
+    y = expression(R^2)
+  )
+
+efficiency_summary <- ggplot(qpcr_summary_std$stats, aes(x = replicates_used, y = Efficiency_percent))+
+  geom_point(color = 'midnightblue')+
+  theme_minimal()+
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1)
+  )+
+  scale_y_continuous(limits = c(80,120))+
+  geom_hline(yintercept = 95, color = 'firebrick3')+
+  geom_hline(yintercept = 105, color = 'firebrick3')+
+  labs(
+    x = "Replicates used",
+    y = 'Efficiency %'
+  )
+
+
+slopes_summary <- ggplot(qpcr_summary_std$stats, aes(x = replicates_used, y = slope))+
+  geom_point(color = 'midnightblue')+
+  theme_minimal()+
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1)
+  )+
+  scale_y_continuous(limits = c(-4,-2))+
+  geom_hline(yintercept = -3.32, color = 'firebrick3')+
+  labs(
+    x = "Replicates used",
+    y = 'Slope'
+  )
+
+plot_grid(r2_summary,efficiency_summary, slopes_summary, labels = c("A", "B", "C"), ncol = 3)
+
+
+```
+
+ggplot(qpcr_samples, aes(x = channel, y = dna_conc, colour = as.factor(dilution_factor)))+
+
+geom_point()+
+
+geom_boxplot()
+
+```{r}
+#Dna conc calculation in sample
+slope <- qpcr_summary_std$stats$slope[1]
+intercept <- qpcr_summary_std$stats$intercept[1]
+qpcr_samples$dna_conc <- 10^((qpcr_samples$Ct-intercept)/slope)*qpcr_samples$final_vol/qpcr_samples$template_vol*qpcr_samples$dilution_factor #get ct, minus intercept, divide by slope. all of that power of 10 to remove log. then corret for sampling volume and dilution factor.
+
+
+
+ggplot(qpcr_samples, aes(x = as.factor(channel), y = dna_conc)) +
+  geom_boxplot() +
+  geom_point(aes(colour = as.factor(dilution_factor)), position = position_jitter(width = 0.2), size = 2) +
+  labs(x = "Channel", y = "DNA concentration (mol/µL)", colour = "Dilution factor") +
+  theme_minimal()
+
+
+ploidy_results <- qpcr_samples |> 
+  select(channel, dna_conc) |>
+  left_join(experimental_set_up, by = "channel") |>
+  left_join(broken_cells |> select(channel, mean_diff, sd_diff), by = "channel")
+
+ploidy_results$dna_conc_frag_ml <-  ploidy_results$dna_conc *1000 #change to mol/ml
+
+ploidy_results$ploidy_estimation <- ploidy_results$dna_conc/ploidy_results$mean_diff #divide by nb of 'broken' cells
+
+ploidy_summary <- ploidy_results |>
+  group_by(phosphate_mM) |>
+  summarise(
+    mean_ploidy = mean(ploidy_estimation),
+    .groups = "drop"
+  )
+
+ggplot(ploidy_summary, aes(x = as.factor(phosphate_mM), y = mean_ploidy, fill = as.factor(phosphate_mM))) +
+  geom_bar(stat = 'identity') +
+  labs(x = "Phosphate (mM)", y = "Mean ploidy estimation") +
+  theme_minimal()
+```
+
+```         
+TACAGGTTACTGGTCGCTCTCCCCAACAGGGCAAAGGTAAGTCAGCAGCAACTTGGTGCTTAACCCTAGA
+AGGTTTGAGTCCGGGGCAATGGCGACCCCTGACCCCTTGGGAAGAAAATTTTTGCCAGCAACTCTTAACG
+GGAAATCCCAATGGTCCCTGGCAGAAAAAATTTGGCGATCGCCGTTGATCAAGGCTCCCTCCCCCCAGGG
+CATTAAAATAGGAACAGTTGCCGAACTCCCTATCAAGCCGAATCATTAATC
+```
