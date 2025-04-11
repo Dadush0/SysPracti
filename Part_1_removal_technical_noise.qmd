@@ -1,0 +1,789 @@
+---
+title: "SBiP"
+format: html
+editor: visual
+---
+
+```{r}
+###packages 
+
+library(dplyr)
+library(readr)
+library(readxl)
+library(ggplot2)
+library(tidyr)
+library(broom)
+library(purrr)
+library(GGally)
+library(glmnet)
+library(knitr)
+library(e1071)
+library(party)
+library(gridExtra)
+library(cowplot)
+library(patchwork)
+library(ggExtra)
+library(knitr)
+library(kableExtra) 
+library(ggdag)
+
+```
+
+## Part I
+
+```{r}
+## reading the data
+
+experimental_set_up <- read.csv('Data/Design.csv')
+
+spectrophotometer<- read.csv('Data/Spectrophotometer.csv')
+
+turbidostat<- read.csv('Data/Turbidostat.csv')
+
+```
+
+```{r}
+###do pigment calculations
+spectrophotometer$Chl_A <- 10.186 * (spectrophotometer$od_value_685 - spectrophotometer$od_value_730) - 0.08
+spectrophotometer$Phy <- (spectrophotometer$od_value_634 - spectrophotometer$od_value_730) / spectrophotometer$od_value_730
+
+###plot pigment data
+
+spectrophotometer <- left_join(spectrophotometer, experimental_set_up, by = "channel")  
+
+summary_pigments <- spectrophotometer |> 
+  group_by(phosphate_mM) |>
+  summarise(
+    mean_Chl_A = mean(Chl_A),
+    mean_Phy = mean(Phy),
+    sd_Chl_A = sd(Chl_A),
+    sd_Phy = sd(Phy),
+    n= n(),
+    .groups = 'drop'
+  )
+
+Chl_A_plot <- ggplot(summary_pigments, aes(x = as.factor(phosphate_mM), y = mean_Chl_A, fill = as.factor(phosphate_mM))) +
+  geom_bar(stat = "identity", width = 0.7) +
+  geom_errorbar(aes(ymin = mean_Chl_A - 1.96 * (sd_Chl_A / sqrt(n)),
+ymax = mean_Chl_A + 1.96 * (sd_Chl_A / sqrt(n))),
+                width = 0.2) +
+  scale_fill_manual(values = c("goldenrod2", "cornflowerblue")) + 
+  labs(
+    x = "[Phosphate] (mM)",
+    y = expression("Chl a (mg Chl a·L"^{-1}*")")
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    text = element_text(size = 10)
+  )
+
+Chl_A_plot
+
+Phy_plot <- ggplot(summary_pigments, aes(x = as.factor(phosphate_mM), y = mean_Phy, fill = as.factor(phosphate_mM))) +
+  geom_bar(stat = "identity", width = 0.7) +
+  geom_errorbar(aes(ymin = mean_Phy - 1.96 * (sd_Phy / sqrt(n)),
+  ymax = mean_Phy + 1.96 * (sd_Phy / sqrt(n))),
+                width = 0.2) +
+  scale_fill_manual(values = c("goldenrod2", "cornflowerblue")) + 
+  labs(
+    x = "[Phosphate] (mM)",
+    y = expression("Phycobilisomes content")
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    text = element_text(size = 10)
+  )
+
+Phy_plot
+
+pigmen_plot <- plot_grid(Chl_A_plot,Phy_plot, labels = c("A", "B"), ncol = 2)
+
+ggsave("pigmen_plot.png", plot = pigmen_plot, width = 7, height = 5, dpi = 300, units = "in")
+
+anova_result_chl_a <- aov(Chl_A ~ factor(phosphate_mM), data = spectrophotometer)
+summary(anova_result_chl_a)
+
+anova_result_phy <- aov(Phy ~ factor(phosphate_mM), data = spectrophotometer)
+summary(anova_result_phy)
+```
+
+```{r}
+## add conditions to turbidostat data
+turbidostat <- left_join(turbidostat, experimental_set_up, by = "channel")
+
+##plot OD vs time for each channel
+turbidostat$facet_label <- paste0("Channel ", turbidostat$channel, " — ", turbidostat$purpose)
+
+turbidostat_facet_plot <- ggplot(turbidostat, aes( x= time_h, y = OD))+
+  geom_point(size = 0.04, color = "black") +
+  facet_wrap(~ facet_label) +
+  scale_y_continuous(limits = c(0, 0.5)) + 
+  scale_x_continuous(limits = c(280, 400)) + 
+  labs(x = "Time (h)", y = expression(OD[720])) +
+  theme_minimal()+
+  theme(
+    text = element_text(size = 10),
+    legend.title = element_text(size = 9),
+    legend.text = element_text(size = 7)
+  )
+
+
+turbidostat_facet_plot
+ggsave("turbidostat_facet_plot.png", plot = turbidostat_facet_plot, width = 7, height = 5, dpi = 300, units = "in")
+
+
+
+#####
+
+
+plot_OD_by_channel <- function(data, threshold = 0.35) {
+  channels <- unique(data$channel)
+
+  plots <- lapply(seq_along(channels), function(i) {
+    ch <- channels[i]
+    subset_data <- data |>
+      filter(channel == ch) |>
+      arrange(time_h) |>
+      mutate(highlight = lead(decision, default = last(decision)) != decision)
+
+    phosphate <- as.character(subset_data$phosphate_mM.x[1])
+
+    show_x <- i %in% c(4, 5, 6)  # Only bottom row
+    show_y <- i %in% c(1, 4)     # Only left column
+
+    p <- ggplot(subset_data, aes(x = time_h, y = OD, color = highlight)) +
+      geom_point(size = 0.8) +
+      scale_color_manual(
+        values = c("FALSE" = "dodgerblue2", "TRUE" = "darkorange1"),
+        labels = c("FALSE" = "Off", "TRUE" = "On"),
+        drop = FALSE
+      ) +
+      scale_y_continuous(limits = c(0, 0.5)) +
+      labs(
+        x = if (show_x) "Time (h)" else NULL,
+        y = if (show_y) expression(OD[720]) else NULL,
+        color = "Pump",
+        title = paste0("Channel ", ch, " - ", phosphate, " mM")
+      ) +
+      theme_minimal() +
+      theme(
+        plot.title = element_text(face = "bold", hjust = 0.5, size = 12),
+        text = element_text(size = 11),
+        axis.title.x = element_text(size = 11),
+        axis.title.y = element_text(size = 11),
+        legend.position = if (i == 1) "bottom" else "none",
+        axis.text.x = element_text(size = 11),
+        axis.text.y = element_text(size = 11)
+      )
+
+    return(p)
+  })
+
+  return(plots)
+}
+
+
+od_plots <- plot_OD_by_channel(turbidostat)
+
+
+combined_od_plot <- (od_plots[[1]] + od_plots[[2]] + od_plots[[3]]) /
+              (od_plots[[4]] + od_plots[[5]] + od_plots[[6]]) +
+              plot_layout(guides = "collect") &
+              theme(legend.position = "bottom")
+
+ggsave("combined_od_plot.png", plot = combined_od_plot, width = 7, height = 5, dpi = 300, units = "in")
+```
+
+```{r}
+
+plot_OD_fits_by_channel <- function(data, threshold = 0.35) {
+  channels <- unique(data$channel)
+
+  plots <- lapply(seq_along(channels), function(i) {
+    ch <- channels[i]
+    subset_data <- data |>
+      filter(channel == ch) |>
+      arrange(time_h) |>
+      group_by(decision) |>
+      mutate(row_num = row_number()) |>
+      filter(!(ch %in% c(1, 7, 8) & row_num <= 15)) |>
+      ungroup() |>
+      mutate(highlight = lead(decision, default = last(decision)) != decision)
+
+
+    phosphate <- as.character(subset_data$phosphate_mM[1])
+
+    show_x <- i %in% c(4, 5, 6)  # Only bottom row
+    show_y <- i %in% c(1, 4)     # Only left column
+
+    p <- ggplot(subset_data, aes(x = time_h, y = log(OD), color = highlight)) +
+      geom_point(size = 0.8) +
+      scale_color_manual(
+        values = c("FALSE" = "dodgerblue2", "TRUE" = "darkorange1"),
+        labels = c("FALSE" = "Off", "TRUE" = "On"),
+        drop = FALSE
+      ) +
+      labs(
+        x = if (show_x) "Time (h)" else NULL,
+        y = if (show_y) expression(ln(OD[720])) else NULL,
+        color = "Pump",
+        title = paste0("Channel ", ch, " - ", phosphate, " mM")
+      ) +
+      theme_minimal() +
+      theme(
+        plot.title = element_text(face = "bold", hjust = 0.5, size = 12),
+        
+        text = element_text(size = 11),
+        axis.title.x = element_text(size = 11),
+        axis.title.y = element_text(size = 11),
+        legend.position = if (i == 1) "bottom" else "none",
+        axis.text.x = element_text(size = 11),
+        axis.text.y = element_text(size = 11)
+      )
+
+    # Add LM fit lines
+    for (d in unique(subset_data$decision)) {
+      group_data <- subset_data |> filter(decision == d)
+      p <- p + geom_smooth(
+        data = group_data,
+        method = "lm", se = FALSE,
+        color = "black", size = 0.7, linetype = "dashed"
+      )
+    }
+
+    return(p)
+  })
+
+  return(plots)
+}
+
+# Generate plots
+OD_plots <- plot_OD_fits_by_channel(turbidostat)
+
+# Combine them (2 rows, 3 cols) with legend at bottom and axis cleanup
+final_OD_plot <- (OD_plots[[1]] + OD_plots[[2]] + OD_plots[[3]]) /
+                 (OD_plots[[4]] + OD_plots[[5]] + OD_plots[[6]]) +
+                 plot_layout(guides = "collect") &
+                 theme(legend.position = "bottom")
+
+
+final_OD_plot
+
+
+ggsave("final_lnOD_plot_trimmed.png", plot = final_OD_plot, width = 7, height = 5, dpi = 300, units = "in")
+
+
+
+
+####
+
+
+# join all results of lm in a table to analyze better
+ln_OD_results <- function(data) {
+  results <- data |>
+    group_by(channel, decision) |>
+    mutate(row_num = row_number()) |>
+    filter(!(channel %in% c(1, 7, 8) & row_num <= 15)) |>
+    summarise(
+      purpose = unique(purpose),
+      phosphate_mM = unique(phosphate_mM),
+      slope = coef(lm(log(OD) ~ time_h))[["time_h"]],
+      r_squared = summary(lm(log(OD) ~ time_h))$r.squared,
+      time_start = min(time_h),
+      time_end = max(time_h),
+      .groups = "drop"
+    ) |>
+    mutate(time_range = paste0(round(time_start, 1), "–", round(time_end, 1))) |>
+    select(channel, purpose,phosphate_mM, slope, r_squared, decision, time_range)
+  
+  return(results)
+}
+
+
+ln_OD_table <- ln_OD_results(turbidostat)
+ln_OD_table
+
+# Format the table for LaTeX
+latex_ready_table <- ln_OD_table |>
+  mutate(
+    `Phosphate (mM)` = formatC(phosphate_mM, format = "f", digits = 4),
+    `Growth rate $\\mu$ (h$^{-1}$)` = formatC(slope, format = "e", digits = 2),
+    `$R^2$` = formatC(r_squared, format = "f", digits = 2)
+  ) |>
+  select(
+    Channel = channel,
+    Purpose = purpose,
+    `Phosphate (mM)`,
+    Decision = decision,
+    `Time range (h)` = time_range,
+    `Growth rate $\\mu$ (h$^{-1}$)`,
+    `$R^2$`
+  )
+
+# Generate LaTeX table
+latex_table <- kable(
+  latex_ready_table,
+  format = "latex",
+  booktabs = TRUE,
+  escape = FALSE,
+  caption = "Estimated growth rates ($\\mu$) and $R^2$ values per channel and condition."
+) |>
+  kable_styling(
+    latex_options = c("striped", "hold_position"),
+    full_width = FALSE,
+    font_size = 10
+  )
+
+# Save to a .tex file
+writeLines(latex_table, "ln_OD_table_trimmed.tex")
+```
+
+```{r}
+
+# Filter data to exclude low-quality fits
+ln_OD_table_filtered <- ln_OD_table |> 
+  filter(r_squared >= 0.9)
+
+ln_OD_table_filtered <- ln_OD_table_filtered |> 
+  group_by(channel) |>
+  mutate(
+    mean_slope_channel = mean(slope),
+    sd_slope_channel = sd(slope)
+  ) |> 
+  ungroup()
+
+ln_OD_table_filtered <- ln_OD_table_filtered |> 
+  group_by(phosphate_mM) |>
+  mutate(
+    mean_slope_phosphate = mean(slope),
+    sd_slope_phosphate = sd(slope),
+    n = n()
+  ) |> 
+  ungroup()
+
+View(ln_OD_table_filtered )
+
+ln_OD_table_filtered$phosphate_mM <- as.factor(ln_OD_table_filtered$phosphate_mM)
+levels(ln_OD_table_filtered$phosphate_mM)
+
+growth_rate_violin <- ggplot(ln_OD_table_filtered, aes(x = factor(channel), y = slope, fill = phosphate_mM)) +
+  geom_violin(trim = FALSE, color = "black", alpha = 0.7, linewidth = 0.3) +  # thinner lines
+  scale_y_continuous(limits = c(0, 0.025)) +
+  geom_jitter(aes(color = phosphate_mM), width = 0.1, size = 2, shape = 21) +  # darker fill
+  labs(
+    x = "Channel",
+    y = expression(mu~(h^{-1})),
+    fill = 'Phosphate (mM)',
+    color = 'Phosphate (mM)'
+  ) +
+  scale_fill_manual(values = c("0.0115" = "goldenrod2", "0.23" = "cornflowerblue")) +
+  scale_color_manual(values = c("0.0115" = "goldenrod4", "0.23" = "royalblue4")) +  # darker shades
+  theme_minimal() +
+  theme(
+    text = element_text(size = 11),
+    legend.position = 'bottom',
+  )
+growth_rate_violin
+
+ggsave("growth_rate_violin_trimmed.png", plot = growth_rate_violin, width = 7, height = 5, dpi = 300, units = "in")
+```
+
+```{r}
+technical_variation <- ggplot(ln_OD_table_filtered, aes(x = factor(channel), y = mean_slope_channel, fill = phosphate_mM )) +
+  geom_bar(stat = "identity", position = 'dodge') +
+  scale_y_continuous(limits = c(0, 0.02), expand = c(0, 0))+
+  labs(
+    x = "Channel",
+    y = expression(mu~(h^{-1})),
+    fill = 'Phosphate (mM)'
+  ) +
+  scale_fill_manual(values = c("0.0115" = "goldenrod2", "0.23" = "cornflowerblue")) +
+  geom_errorbar(aes(ymin = mean_slope_channel - 2*sd_slope_channel, ymax = mean_slope_channel + 2*sd_slope_channel,width = 0.2),  position = 'dodge',
+  width = 0.2)+
+  theme_minimal() +
+  theme(
+    text = element_text(size = 11),
+    legend.position = 'bottom',
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(size = 10)
+  )
+
+technical_variation
+
+
+ggsave("technical_variation_trimmed.png", plot = technical_variation, width = 7, height = 5, dpi = 300, units = "in")
+
+anova_result_technical <- aov(slope ~ factor(channel), data = ln_OD_table_filtered)
+summary(anova_result_technical)
+TukeyHSD(anova_result_technical)
+```
+
+```{r}
+
+
+biological_variation <- ggplot(ln_OD_table_filtered, aes(x = factor(phosphate_mM), y = mean_slope_phosphate, fill = phosphate_mM)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.7) +
+  labs(
+    x = "Phosphate (mM)",
+    y = expression(mu~(h^{-1}))
+  ) +
+  scale_fill_manual(values = c('0.0115' = "goldenrod2", '0.23' = "cornflowerblue")) +
+  guides(fill = "none")+
+  geom_errorbar(aes(ymin = mean_slope_phosphate - 1.96 * (sd_slope_phosphate / sqrt(n)),
+ymax = mean_slope_phosphate + 1.96 * (sd_slope_phosphate / sqrt(n)),width = 0.2))+
+  theme_minimal() +
+  theme(
+    text = element_text(size = 10),
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(size = 10)
+  )
+
+biological_variation
+
+ggsave("biological_variation_trimmed.png", plot = biological_variation, width = 3.5, height = 5, dpi = 300, units = "in")
+
+anova_result_bio <- aov(slope ~ factor(phosphate_mM), data = ln_OD_table_filtered)
+summary(anova_result_bio)
+
+```
+
+```{r}
+#extra plots
+#Merge pigment and growth data
+combined <- ln_OD_table_filtered |>
+  group_by(channel) |>
+  summarise(mu = mean(slope)) |>
+  left_join(spectrophotometer, by = "channel")
+
+#Scatter plots
+ggplot(combined, aes(x = mu, y = Chl_A, colour = factor(phosphate_mM))) +
+  geom_point(size = 3) +
+  scale_color_manual(values = c("0.0115" = "goldenrod2", "0.23" = "cornflowerblue"))+
+  labs(x = expression(mu~(h^{-1})), y = 'Chl a (mg/L)') +
+  theme_minimal()
+
+ggplot(combined, aes(x = mu, y = Phy, colour = factor(phosphate_mM))) +
+  geom_point(size = 3) +
+  scale_color_manual(values = c("0.0115" = "goldenrod2", "0.23" = "cornflowerblue"))+
+  labs(x = expression(mu~(h^{-1})), y = 'Phy content') +
+  #geom_smooth(method = "lm", se = FALSE, linetype = "dashed", size = 1.2) +
+  theme_minimal()
+
+
+ggplot(combined, aes(x = Chl_A, y = Phy, colour = factor(phosphate_mM))) +
+  geom_point(size = 3) +
+  scale_color_manual(values = c("0.0115" = "goldenrod2", "0.23" = "cornflowerblue"))+
+  labs(x = 'ChlA', y = 'Phy content') +
+  #geom_smooth(method = "lm", se = FALSE, linetype = "dashed", size = 1.2) +
+  theme_minimal()
+
+
+
+```
+
+```{r}
+###Read ploidy data
+casy <- read_csv('Data/Casy.csv')
+qpcr <- read_csv('Data/Qpcr.csv')
+
+std_fragment <- readLines('Data/standard_fragment_sequence.txt')
+
+
+###Correct for dilutions
+casy_corrected_dilutions <- casy
+casy_corrected_dilutions$counts_corrected <- casy$counts * (1/(casy_corrected_dilutions$sample_volume/casy_corrected_dilutions$casyton_volume))*casy_corrected_dilutions$sample_dilution*1000/casy_corrected_dilutions$measurement_volume
+
+casy_corrected_dilutions <- casy_corrected_dilutions |>
+  left_join(experimental_set_up, by = "channel")
+#plot of all cells per channel
+
+casy_corrected_dilutions_mc <- casy_corrected_dilutions |>
+  filter(sample_type %in% 'MC')
+
+
+casy_mc_summary <- casy_corrected_dilutions_mc |>
+  group_by(channel) |>
+  summarise(
+    mean_counts = mean(counts_corrected),
+    .groups = "drop"
+  )
+
+ggplot(casy_mc_summary, aes(x = as.factor(channel), y = mean_counts))+
+  geom_bar(stat = 'identity')+
+  theme_minimal()
+
+casy_corrected_dilutions_bbb_abb <- casy_corrected_dilutions |>
+  filter(sample_type %in% c('ABB','BBB'))
+
+casy_bbb_abb_summary <- casy_corrected_dilutions_bbb_abb |>
+  group_by(channel, sample_type) |>
+  summarise(
+    mean_counts = mean(counts_corrected),
+    .groups = "drop"
+  )
+
+ggplot(casy_bbb_abb_summary, aes(x = as.factor(channel), y = mean_counts, fill = sample_type))+
+  geom_bar(stat = 'identity', position = 'dodge')+
+  theme_minimal()
+
+#Calculate number of broken cells
+replicate_counts <- casy_corrected_dilutions_bbb_abb |>
+  select(channel, sample_type, counts_corrected, replicate) |>  # ensure replicate exists
+  pivot_wider(
+    names_from = sample_type,
+    values_from = counts_corrected
+  )
+
+
+broken_cells <- replicate_counts |>
+  group_by(channel) |>
+  summarise(
+    mean_diff = mean(BBB - ABB),
+    var_ABB = var(ABB),
+    var_BBB = var(BBB),
+    cov_AB = cov(ABB, BBB, use = "complete.obs"),
+    sd_diff = sqrt(var_ABB + var_BBB - 2 * cov_AB), #this is error propagation assuming covariance
+    .groups = "drop"
+  )
+
+
+ggplot(broken_cells, aes(x = as.factor(channel), y = mean_diff))+
+  geom_bar(stat = 'identity')
+
+
+lysis_efficiency <- casy_corrected_dilutions_bbb_abb |>
+  select(channel, sample_type, counts_corrected, replicate) |>
+  pivot_wider(names_from = sample_type, values_from = counts_corrected) |>
+  group_by(channel) |>
+  summarise(
+    mean_diff = mean(BBB - ABB),
+    var_ABB = var(ABB),
+    var_BBB = var(BBB),
+    cov_AB = cov(ABB, BBB, use = "complete.obs"),
+    sd_diff = sqrt(var_ABB + var_BBB - 2 * cov_AB),
+    mean_BBB = mean(BBB),  # temporary value used below
+    lysis_efficiency = mean_diff / mean_BBB,
+    .groups = "drop"
+  )
+
+
+ggplot(lysis_efficiency, aes(x = as.factor(channel), y = lysis_efficiency))+
+  geom_bar(stat = 'identity')
+```
+
+```{r}
+
+#Split tables
+qpcr_samples <- qpcr |> filter(sample_class == "sample")
+
+
+
+qpcr_standards <- qpcr|> filter(sample_class == "standard")
+initial_concentration <- 0.04/ 4 #ng/ul
+
+avogadro <- 6.023*10^(23)
+qpcr_standards_corrected <- qpcr_standards
+mol_mass_fragment = 670469.73  #g/mol
+
+
+initial_concentration <- initial_concentration * 10^(-9) * avogadro / mol_mass_fragment
+
+qpcr_standards_corrected$dna_conc <- 
+  (initial_concentration/qpcr_standards_corrected$dilution_factor)*(1/(qpcr_standards_corrected$template_vol/qpcr_standards_corrected$final_vol)) #this is in mol/ul
+
+
+```
+
+```{r}
+
+library(broom)
+
+plot_qpcr_with_fit <- function(data, reps = c("1", "2", "3")) {
+  # Filter for selected replicates
+  filtered_data <- data |>
+    filter(as.character(replicate) %in% reps) |>
+    mutate(replicate = as.factor(replicate))
+  
+  #fit single line to log10 of conc
+  model <- lm(Ct ~ log10(dna_conc), data = filtered_data)
+  tidy_fit <- tidy(model)
+  glance_fit <- glance(model)
+  
+  #extraxt values
+  slope <- tidy_fit$estimate[2]
+  intercept <- tidy_fit$estimate[1]
+  r2 <- glance_fit$r.squared
+  E <- 10^(-1 / slope)
+  percent_E <- (E - 1) * 100
+  
+  stats_table <- tibble(
+    replicates_used = paste(reps, collapse = " "),
+    slope = slope,
+    intercept = intercept,
+    R2 = r2,
+    Efficiency = E,
+    Efficiency_percent = percent_E
+  )
+  
+  # Plot with all replicates colored
+  plot <- ggplot(filtered_data, aes(x = log10(dna_conc), y = Ct, color = replicate)) +
+    geom_point(size = 3) +
+    geom_smooth(method = "lm", se = FALSE, color = "black", linetype = "dashed") +
+    scale_color_manual(
+      values = c("1" = "darkseagreen4", "2" = "darkorchid3", "3" = "orangered2"),
+      drop = FALSE
+    ) +
+    labs(
+      x = expression(Log[10]~DNA~concentration~(mol/µL)),
+      y = "Ct value",
+      color = "Replicate",
+      title = paste("qPCR Standard Curve — Reps:", paste(reps, collapse = ", "))
+    ) +
+    theme_minimal()
+  
+  return(list(
+    plot = plot,
+    stats = stats_table
+  ))
+}
+
+library(purrr)
+summarize_qpcr_combinations <- function(data) {
+  combos <- list(
+    "1"     = c("1"),
+    "2"     = c("2"),
+    "3"     = c("3"),
+    "1 2"   = c("1", "2"),
+    "1 3"   = c("1", "3"),
+    "2 3"   = c("2", "3"),
+    "1 2 3" = c("1", "2", "3")
+  )
+
+  stats_list <- list()
+  plot_list <- list()
+  
+  for (name in names(combos)) {
+    reps <- combos[[name]]
+    fit <- plot_qpcr_with_fit(data, reps = reps)
+    
+    stats_list[[name]] <- fit$stats
+    plot_list[[name]] <- fit$plot
+  }
+  
+  #combine stats
+  stats_table <- bind_rows(stats_list, .id = "replicate_combo")
+
+  return(list(
+    stats = stats_table,
+    plots = plot_list
+  ))
+}
+
+
+qpcr_summary_std <- summarize_qpcr_combinations(qpcr_standards_corrected)
+qpcr_summary_std$stats
+qpcr_summary_std$plots
+
+r2_summary <- ggplot(qpcr_summary_std$stats, aes(x = replicates_used, y = R2))+
+  geom_point(color = 'midnightblue')+
+  theme_minimal()+
+  scale_y_continuous(limits = c(0.98,1))+
+  geom_hline(yintercept = 0.99, color = 'firebrick3')+
+    theme(
+    axis.text.x = element_text(angle = 90, hjust = 1)
+  )+
+  labs(
+    x = "Replicates used",
+    y = expression(R^2)
+  )
+
+efficiency_summary <- ggplot(qpcr_summary_std$stats, aes(x = replicates_used, y = Efficiency_percent))+
+  geom_point(color = 'midnightblue')+
+  theme_minimal()+
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1)
+  )+
+  scale_y_continuous(limits = c(80,120))+
+  geom_hline(yintercept = 95, color = 'firebrick3')+
+  geom_hline(yintercept = 105, color = 'firebrick3')+
+  labs(
+    x = "Replicates used",
+    y = 'Efficiency %'
+  )
+
+
+slopes_summary <- ggplot(qpcr_summary_std$stats, aes(x = replicates_used, y = slope))+
+  geom_point(color = 'midnightblue')+
+  theme_minimal()+
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1)
+  )+
+  scale_y_continuous(limits = c(-4,-2))+
+  geom_hline(yintercept = -3.32, color = 'firebrick3')+
+  labs(
+    x = "Replicates used",
+    y = 'Slope'
+  )
+
+plot_grid(r2_summary,efficiency_summary, slopes_summary, labels = c("A", "B", "C"), ncol = 3)
+
+
+```
+
+ggplot(qpcr_samples, aes(x = channel, y = dna_conc, colour = as.factor(dilution_factor)))+
+
+geom_point()+
+
+geom_boxplot()
+
+```{r}
+#Dna conc calculation in sample
+slope <- qpcr_summary_std$stats$slope[1]
+intercept <- qpcr_summary_std$stats$intercept[1]
+
+print(qpcr_summary_std$stats$intercept[1])
+
+
+
+qpcr_samples$dna_conc <- (10^((qpcr_samples$Ct -intercept)/slope)*qpcr_samples$final_vol/(qpcr_samples$template_vol *2))*qpcr_samples$dilution_factor
+#get ct, minus intercept, divide by slope. all of that power of 10 to remove log. then corret for sampling volume and dilution factor.
+
+
+
+ggplot(qpcr_samples, aes(x = as.factor(channel), y = dna_conc)) +
+  geom_boxplot() +
+  geom_point(aes(colour = as.factor(dilution_factor)), position = position_jitter(width = 0.2), size = 2) +
+  labs(x = "Channel", y = "DNA concentration (mol/µL)", colour = "Dilution factor") +
+  theme_minimal()
+
+
+ploidy_results <- qpcr_samples |> 
+  select(channel, dna_conc) |>
+  left_join(experimental_set_up, by = "channel") |>
+  left_join(broken_cells |> select(channel, mean_diff, sd_diff), by = "channel")
+
+ploidy_results$dna_conc_frag_ml <-  ploidy_results$dna_conc *1000 #change to mol/ml
+
+ploidy_results$ploidy_estimation <- ploidy_results$dna_conc/ploidy_results$mean_diff #divide by nb of 'broken' cells
+
+ploidy_summary <- ploidy_results |>
+  group_by(phosphate_mM) |>
+  summarise(
+    mean_ploidy = mean(ploidy_estimation),
+    .groups = "drop"
+  )
+
+ggplot(ploidy_summary, aes(x = as.factor(phosphate_mM), y = mean_ploidy, fill = as.factor(phosphate_mM))) +
+  geom_bar(stat = 'identity') +
+  labs(x = "Phosphate (mM)", y = "Mean ploidy estimation") +
+  theme_minimal()
+```
+
+```         
+TACAGGTTACTGGTCGCTCTCCCCAACAGGGCAAAGGTAAGTCAGCAGCAACTTGGTGCTTAACCCTAGA
+AGGTTTGAGTCCGGGGCAATGGCGACCCCTGACCCCTTGGGAAGAAAATTTTTGCCAGCAACTCTTAACG
+GGAAATCCCAATGGTCCCTGGCAGAAAAAATTTGGCGATCGCCGTTGATCAAGGCTCCCTCCCCCCAGGG
+CATTAAAATAGGAACAGTTGCCGAACTCCCTATCAAGCCGAATCATTAATC
+```
