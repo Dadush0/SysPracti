@@ -923,14 +923,14 @@ plot_OD_fits_with_exp_start <- function(data, fits, threshold = 0.35) {
   left_join(fits |> filter(channel == ch), by = "decision") |>
   mutate(
     phase = case_when(
-      time_h < start_time ~ "pre_exp",
-      TRUE ~ as.character(highlight)  # "TRUE" or "FALSE"
+      time_h < start_time ~ "pre_exp",#save if we are in pre or not for pretty ploting 
+      TRUE ~ as.character(highlight)  #TRUE" or "FALSE"
     )
   )
 
-# Set custom colors
+#set custom colors
 color_vals <- c(
-  "pre_exp" = "gray70",
+  "pre_exp" = "gray70",      #points not considered for calcuation
   "FALSE" = "dodgerblue2",  # pump off
   "TRUE" = "darkorange1"    # pump on
 )
@@ -941,7 +941,7 @@ label_vals <- c(
   "TRUE" = "Pump on"
 )
 
-# Plot
+#plot
 p <- ggplot(subset_data, aes(x = time_h, y = log(OD), color = phase)) +
   geom_point(size = 0.8) +
   scale_color_manual(values = color_vals, labels = label_vals, drop = FALSE) +
@@ -962,18 +962,18 @@ p <- ggplot(subset_data, aes(x = time_h, y = log(OD), color = phase)) +
     axis.text.y = element_text(size = 11)
   )
 
-# Vertical line at start of exp phase
+#vertical line at start of exp phase
 if (nrow(fit_lines) > 0) {
   p <- p + geom_vline(data = fit_lines, aes(xintercept = start_time),
                       linetype = "dotted", color = "black", linewidth = 0.5)
 }
 
-# Add real exponential phase fits
-for (j in seq_len(nrow(fit_lines))) {
-  f <- fit_lines[j, ]
+#add real exponential phase fits, the ones we just calculated
+for (j in seq_len(nrow(fit_lines))) {#loop over exponential fits
+  f <- fit_lines[j, ] #grab each decision period
 exp_data <- subset_data |> 
-  filter(decision == f$decision, time_h >= f$start_time) |>
-  mutate(fitted = f$intercept + f$slope * time_h)
+  filter(decision == f$decision, time_h >= f$start_time) |>#select points in the decision we are in, and that are in the exp fase
+  mutate(fitted = f$intercept + f$slope * time_h)#calculate the y of fitted values according to wwhat we just calculated
 
 p <- p + geom_line(
   data = exp_data,
