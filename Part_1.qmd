@@ -149,8 +149,8 @@ plot_OD_by_channel <- function(data, threshold = 0.35) {
 
     phosphate <- as.character(subset_data$phosphate_mM.x[1])
 
-    show_x <- i %in% c(4, 5, 6)  # Only bottom row
-    show_y <- i %in% c(1, 4)     # Only left column
+    show_x <- i %in% c(4, 5, 6)  #only bottom row
+    show_y <- i %in% c(1, 4)     #only left column
 
     p <- ggplot(subset_data, aes(x = time_h, y = OD, color = highlight)) +
       geom_point(size = 0.8) +
@@ -209,8 +209,8 @@ plot_OD_fits_by_channel <- function(data, threshold = 0.35) {
 
     phosphate <- as.character(subset_data$phosphate_mM[1])
 
-    show_x <- i %in% c(4, 5, 6)  # Only bottom row
-    show_y <- i %in% c(1, 4)     # Only left column
+    show_x <- i %in% c(4, 5, 6)  #only bottom row
+    show_y <- i %in% c(1, 4)     #only left column
 
     p <- ggplot(subset_data, aes(x = time_h, y = log(OD), color = highlight)) +
       geom_point(size = 0.8) +
@@ -237,7 +237,7 @@ plot_OD_fits_by_channel <- function(data, threshold = 0.35) {
         axis.text.y = element_text(size = 11)
       )
 
-    # Add LM fit lines
+    #add LM fit lines
     for (d in unique(subset_data$decision)) {
       group_data <- subset_data |> filter(decision == d)
       p <- p + geom_smooth(
@@ -253,10 +253,10 @@ plot_OD_fits_by_channel <- function(data, threshold = 0.35) {
   return(plots)
 }
 
-# Generate plots
+#generate plots
 OD_plots <- plot_OD_fits_by_channel(turbidostat)
 
-# Combine them (2 rows, 3 cols) with legend at bottom and axis cleanup
+#combine them (2 rows, 3 cols) with legend at bottom
 final_OD_plot <- (OD_plots[[1]] + OD_plots[[2]] + OD_plots[[3]]) /
                  (OD_plots[[4]] + OD_plots[[5]] + OD_plots[[6]]) +
                  plot_layout(guides = "collect") &
@@ -288,7 +288,7 @@ ln_OD_results <- function(data) {
       .groups = "drop"
     ) |>
     mutate(time_range = paste0(round(time_start, 1), "–", round(time_end, 1))) |>
-    select(channel, purpose,phosphate_mM, slope, r_squared, decision, time_range)
+    dplyr::select(channel, purpose,phosphate_mM, slope, r_squared, decision, time_range)
   
   return(results)
 }
@@ -297,14 +297,14 @@ ln_OD_results <- function(data) {
 ln_OD_table <- ln_OD_results(turbidostat)
 ln_OD_table
 
-# Format the table for LaTeX
+#format the table for LaTeX
 latex_ready_table <- ln_OD_table |>
   mutate(
     `Phosphate (mM)` = formatC(phosphate_mM, format = "f", digits = 4),
     `Growth rate $\\mu$ (h$^{-1}$)` = formatC(slope, format = "e", digits = 2),
     `$R^2$` = formatC(r_squared, format = "f", digits = 2)
   ) |>
-  select(
+  dplyr::select(
     Channel = channel,
     Purpose = purpose,
     `Phosphate (mM)`,
@@ -314,7 +314,7 @@ latex_ready_table <- ln_OD_table |>
     `$R^2$`
   )
 
-# Generate LaTeX table
+#LaTeX table
 latex_table <- kable(
   latex_ready_table,
   format = "latex",
@@ -328,14 +328,14 @@ latex_table <- kable(
     font_size = 10
   )
 
-# Save to a .tex file
+#Save to a .tex file
 writeLines(latex_table, "ln_OD_table.tex")
 
 ```
 
 ```{r}
 
-# Filter data to exclude low-quality fits
+#filter data to exclude low-quality fits
 ln_OD_table_filtered <- ln_OD_table |> 
   filter(r_squared >= 0.9)
 
@@ -361,9 +361,9 @@ ln_OD_table_filtered$phosphate_mM <- as.factor(ln_OD_table_filtered$phosphate_mM
 levels(ln_OD_table_filtered$phosphate_mM)
 
 growth_rate_violin <- ggplot(ln_OD_table_filtered, aes(x = factor(channel), y = slope, fill = phosphate_mM)) +
-  geom_violin(trim = FALSE, color = "black", alpha = 0.7, linewidth = 0.3) +  # thinner lines
+  geom_violin(trim = FALSE, color = "black", alpha = 0.7, linewidth = 0.3) + 
   scale_y_continuous(limits = c(0, 0.025)) +
-  geom_jitter(aes(color = phosphate_mM), width = 0.1, size = 2, shape = 21) +  # darker fill
+  geom_jitter(aes(color = phosphate_mM), width = 0.1, size = 2, shape = 21) + 
   labs(
     x = "Channel",
     y = expression(mu~(h^{-1})),
@@ -371,7 +371,7 @@ growth_rate_violin <- ggplot(ln_OD_table_filtered, aes(x = factor(channel), y = 
     color = 'Phosphate (mM)'
   ) +
   scale_fill_manual(values = c("0.0115" = "goldenrod2", "0.23" = "cornflowerblue")) +
-  scale_color_manual(values = c("0.0115" = "goldenrod4", "0.23" = "royalblue4")) +  # darker shades
+  scale_color_manual(values = c("0.0115" = "goldenrod4", "0.23" = "royalblue4")) + 
   theme_minimal() +
   theme(
     text = element_text(size = 11),
@@ -476,6 +476,7 @@ ggplot(combined, aes(x = Chl_A, y = Phy, colour = factor(phosphate_mM))) +
 ```
 
 ```{r}
+library(dplyr)
 ###Read ploidy data
 casy <- read_csv('Data/Casy.csv')
 qpcr <- read_csv('Data/Qpcr.csv')
@@ -546,7 +547,7 @@ ggsave("abb_bbb_plot.png", plot = abb_bbb_plot, width = 7, height = 5, dpi = 300
 
 #Calculate number of broken cells
 replicate_counts <- casy_corrected_dilutions_bbb_abb |>
-  select(channel, sample_type, counts_corrected, replicate) |>  # ensure replicate exists
+  dplyr::select(channel, sample_type, counts_corrected, replicate) |>
   pivot_wider(
     names_from = sample_type,
     values_from = counts_corrected
@@ -576,7 +577,7 @@ broken_cells_plot <- ggplot(broken_cells, aes(x = as.factor(channel), y = mean_d
 ggsave("broken_cells_plot.png", plot = broken_cells_plot, width = 7, height = 5, dpi = 300, units = "in")
 
 lysis_efficiency <- casy_corrected_dilutions_bbb_abb |>
-  select(channel, sample_type, counts_corrected, replicate) |>
+  dplyr::select(channel, sample_type, counts_corrected, replicate) |>
   pivot_wider(names_from = sample_type, values_from = counts_corrected) |>
   group_by(channel) |>
   summarise(
@@ -586,7 +587,7 @@ lysis_efficiency <- casy_corrected_dilutions_bbb_abb |>
     cov_AB = cov(ABB, BBB, use = "complete.obs"),
     sd_diff = sqrt(var_ABB + var_BBB - 2 * cov_AB),
     mean_BBB = mean(BBB),  # temporary value used below
-    lysis_efficiency = mean_diff / mean_BBB,
+    lysis_efficiency = (mean_diff / mean_BBB)*100,
     .groups = "drop"
   )
 
@@ -632,7 +633,7 @@ qpcr_standards_corrected$dna_conc <-
 library(broom)
 
 plot_qpcr_with_fit <- function(data, reps = c("1", "2", "3")) {
-  # Filter for selected replicates
+  #filter for selected replicates
   filtered_data <- data |>
     filter(as.character(replicate) %in% reps) |>
     mutate(replicate = as.factor(replicate))
@@ -659,7 +660,7 @@ plot_qpcr_with_fit <- function(data, reps = c("1", "2", "3")) {
     Efficiency_percent = percent_E
   )
   
-  # Plot with all replicates colored
+  #plot with all replicates colored
   plot <- ggplot(filtered_data, aes(x = log10(dna_conc), y = Ct, color = replicate)) +
     geom_point(size = 3) +
     geom_smooth(method = "lm", se = TRUE, color = "black", linetype = "dashed", size = 1) +
@@ -807,9 +808,9 @@ dna_conc_plot <- ggplot(qpcr_samples, aes(x = as.factor(channel), y = dna_conc))
 ggsave("dna_conc_plot.png", plot = dna_conc_plot, width = 7, height = 5, dpi = 300, units = "in")
 
 ploidy_results <- qpcr_samples |> 
-  select(channel, dna_conc) |>
+  dplyr::select(channel, dna_conc) |>
   left_join(experimental_set_up, by = "channel") |>
-  left_join(broken_cells |> select(channel, mean_diff, sd_diff), by = "channel")
+  left_join(broken_cells |> dplyr::select(channel, mean_diff, sd_diff), by = "channel")
 
 ploidy_results$dna_conc_frag_ml <-  ploidy_results$dna_conc*1000 #change to mol/ml
 
@@ -838,6 +839,9 @@ ploidy_plot <- ggplot(ploidy_summary, aes(x = as.factor(phosphate_mM), y = mean_
   )
 
 ggsave("ploidy_plot.png", plot = ploidy_plot, width = 7, height = 5, dpi = 300, units = "in")
+
+anova_ploidy <- aov(ploidy_estimation ~ factor(phosphate_mM), data = ploidy_results)
+summary(anova_ploidy)
 ```
 
 ```         
@@ -880,7 +884,7 @@ growth_fits <- turbidostat |>
     #Use sliding sum to check for consecutive positivs
     check_consecutive <- slider::slide_dbl(is_positive, sum, .before = 0, .after = required_consecutive - 1) #is this, and the next 2 positive? store result of conseq positives
 
-    # Find the first timepoint where required number of consecutive positives occur
+    #find the first timepoint where required number of consecutive positives occur
     start_idx <- which(check_consecutive >= required_consecutive)[1]
     if (is.na(start_idx)) return(NULL) #if the conseq are more than the required this is the starting point of the exponential phase
 
@@ -894,13 +898,14 @@ growth_fits <- turbidostat |>
       channel = df$channel[1],
       decision = df$decision[1],
       start_time = df$time_h[start_idx],
+      time_end = df$time_h[nrow(df)],
       slope = coef[2],
       intercept = coef[1],
       r_squared = r2
     )
   })
 
-
+growth_fits
 plot_OD_fits_with_exp_start <- function(data, fits, threshold = 0.35) {
   channels <- unique(data$channel)
 
@@ -1001,5 +1006,171 @@ final_OD_plot_exp <- (OD_plots_exp[[1]] + OD_plots_exp[[2]] + OD_plots_exp[[3]])
 final_OD_plot_exp
 suppressMessages(print(final_OD_plot_exp))
 ggsave("final_lnOD_plot_with_exp_start.png", plot = final_OD_plot_exp, width = 7, height = 5, dpi = 300, units = "in")
+
+###export table
+
+#join design data
+growth_fits_extended <- growth_fits |>
+  left_join(experimental_set_up, by = "channel") |>
+  mutate(
+    time_range = paste0(round(start_time, 1), "–",  round(time_end, 1))
+  )
+
+#format for latex
+latex_ready_growth_table <- growth_fits_extended |>
+  mutate(
+    `Phosphate (mM)` = formatC(phosphate_mM, format = "f", digits = 4),
+    `Growth rate $\\mu$ (h$^{-1}$)` = formatC(slope, format = "e", digits = 2),
+    `$R^2$` = formatC(r_squared, format = "f", digits = 2)
+  ) |>
+  dplyr::select(
+    Channel = channel,
+    Purpose = purpose,
+    `Phosphate (mM)`,
+    Decision = decision,
+    `Time range (h)` = time_range,
+    `Growth rate $\\mu$ (h$^{-1}$)`,
+    `$R^2$`
+  )
+
+latex_growth_table <- kable(
+  latex_ready_growth_table,
+  format = "latex",
+  booktabs = TRUE,
+  escape = FALSE,
+  caption = "Estimated growth rates ($\\mu$) and $R^2$ values based on automated exponential phase detection."
+) |>
+  kable_styling(
+    latex_options = c("striped", "hold_position"),
+    full_width = FALSE,
+    font_size = 10
+  )
+
+#save
+writeLines(latex_growth_table, "auto_growth_fits_table.tex")
+
+
+
+comparison_table <- ln_OD_table |> 
+  dplyr::select(channel, decision, r2_before = r_squared) |>
+  inner_join(growth_fits |> dplyr::select(channel, decision, r2_after = r_squared), 
+             by = c("channel", "decision"))
+
+#identify changes across the 0.9 threshold
+r2_dropped <- comparison_table |> 
+  filter(r2_before > 0.9, r2_after <= 0.9)
+
+r2_improved <- comparison_table |> 
+  filter(r2_before <= 0.9, r2_after > 0.9)
+
+r2_dropped
+r2_improved
+```
+
+```{r}
+#correction of downstream plots after using fish hook correction
+#repeated what was done before only changing vars
+#Filter data to exclude low-quality fits
+growth_fits_extended_filtered <- growth_fits_extended |> 
+  filter(r_squared >= 0.9)
+
+growth_fits_extended_filtered <- growth_fits_extended_filtered |> 
+  group_by(channel) |>
+  mutate(
+    mean_slope_channel = mean(slope),
+    sd_slope_channel = sd(slope)
+  ) |> 
+  ungroup()
+
+growth_fits_extended_filtered <- growth_fits_extended_filtered |> 
+  group_by(phosphate_mM) |>
+  mutate(
+    mean_slope_phosphate = mean(slope),
+    sd_slope_phosphate = sd(slope),
+    n = n()
+  ) |> 
+  ungroup()
+
+
+growth_fits_extended_filtered$phosphate_mM <- as.factor(growth_fits_extended_filtered$phosphate_mM)
+levels(growth_fits_extended_filtered$phosphate_mM)
+
+growth_rate_violin_corrected <- ggplot(growth_fits_extended_filtered, aes(x = factor(channel), y = slope, fill = phosphate_mM)) +
+  geom_violin(trim = FALSE, color = "black", alpha = 0.7, linewidth = 0.3) + 
+  scale_y_continuous(limits = c(0, 0.025)) +
+  geom_jitter(aes(color = phosphate_mM), width = 0.1, size = 2, shape = 21) + 
+  labs(
+    x = "Channel",
+    y = expression(mu~(h^{-1})),
+    fill = 'Phosphate (mM)',
+    color = 'Phosphate (mM)'
+  ) +
+  scale_fill_manual(values = c("0.0115" = "goldenrod2", "0.23" = "cornflowerblue")) +
+  scale_color_manual(values = c("0.0115" = "goldenrod4", "0.23" = "royalblue4")) + 
+  theme_minimal() +
+  theme(
+    text = element_text(size = 11),
+    legend.position = 'bottom',
+  )
+growth_rate_violin_corrected
+
+ggsave("growth_rate_violin_corrected.png", plot = growth_rate_violin_corrected, width = 7, height = 5, dpi = 300, units = "in")
+
+
+
+technical_variation_corrected <- ggplot(growth_fits_extended_filtered, aes(x = factor(channel), y = mean_slope_channel, fill = phosphate_mM )) +
+  geom_bar(stat = "identity", position = 'dodge') +
+  scale_y_continuous(limits = c(0, 0.02), expand = c(0, 0))+
+  labs(
+    x = "Channel",
+    y = expression(mu~(h^{-1})),
+    fill = 'Phosphate (mM)'
+  ) +
+  scale_fill_manual(values = c("0.0115" = "goldenrod2", "0.23" = "cornflowerblue")) +
+  geom_errorbar(aes(ymin = mean_slope_channel - 2*sd_slope_channel, ymax = mean_slope_channel + 2*sd_slope_channel,width = 0.2),  position = 'dodge',
+  width = 0.2)+
+  theme_minimal() +
+  theme(
+    text = element_text(size = 11),
+    legend.position = 'bottom',
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(size = 10)
+  )
+
+technical_variation_corrected
+
+
+ggsave("technical_variation_corrected.png", plot = technical_variation_corrected, width = 7, height = 5, dpi = 300, units = "in")
+
+anova_result_technical_corrected <- aov(slope ~ factor(channel), data = growth_fits_extended_filtered)
+summary(anova_result_technical_corrected)
+TukeyHSD(anova_result_technical_corrected)
+
+
+
+
+biological_variation_corrected <- ggplot(growth_fits_extended_filtered, aes(x = factor(phosphate_mM), y = mean_slope_phosphate, fill = phosphate_mM)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.7) +
+  labs(
+    x = "Phosphate (mM)",
+    y = expression(mu~(h^{-1}))
+  ) +
+  scale_fill_manual(values = c('0.0115' = "goldenrod2", '0.23' = "cornflowerblue")) +
+  guides(fill = "none")+
+  geom_errorbar(aes(ymin = mean_slope_phosphate - 1.96 * (sd_slope_phosphate / sqrt(n)),
+ymax = mean_slope_phosphate + 1.96 * (sd_slope_phosphate / sqrt(n)),width = 0.2))+
+  theme_minimal() +
+  theme(
+    text = element_text(size = 10),
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(size = 10)
+  )
+
+biological_variation_corrected
+
+ggsave("biological_variation_corrected.png", plot = biological_variation_corrected, width = 3.5, height = 5, dpi = 300, units = "in")
+
+anova_result_bio_corrected <- aov(slope ~ factor(phosphate_mM), data = growth_fits_extended_filtered)
+summary(anova_result_bio_corrected)
 
 ```
