@@ -1,0 +1,99 @@
+---
+title: "transcriptomics_analysis"
+format: html
+---
+```{r}
+transcriptomics_data <- read.csv('log2FC_transcriptomics.csv')
+```
+
+### 30 genes that are most up and down regulated and are siginificant ###
+```{r}
+# determine the upregulated and downregulated genes 
+significant_genes <- transcriptomics_data[transcriptomics_data$padj <= 0.05, ]
+
+
+upregulated_genes <- significant_genes[order(significant_genes$log2FoldChange, decreasing = TRUE), ][1:30, ]
+downregulated_genes <- significant_genes[order(significant_genes$log2FoldChange, decreasing = FALSE), ][1:30, ]
+
+```
+
+### p-values and number of genes ###
+```{r}
+
+# 0.05
+count_padj_05_lower <- sum(transcriptomics_data$padj < 0.05)
+count_padj_05_higher <- sum(transcriptomics_data$padj >= 0.05)
+
+# 0.01
+count_padj_01_lower <- sum(transcriptomics_data$padj < 0.01)
+count_padj_01_higher <- sum(transcriptomics_data$padj >= 0.01)
+
+# 0.001
+count_padj_001_lower <- sum(transcriptomics_data$padj < 0.001)
+count_padj_001_higher <- sum(transcriptomics_data$padj >= 0.001)
+
+# number of genes higher or lower then some p-value 
+cat("Genes with adjusted p-value < 0.05: ", count_padj_05_lower, "\n")
+cat("Genes with adjusted p-value >= 0.05: ", count_padj_05_higher, "\n")
+
+cat("Genes with adjusted p-value < 0.01: ", count_padj_01_lower, "\n")
+cat("Genes with adjusted p-value >= 0.01: ", count_padj_01_higher, "\n")
+
+cat("Genes with adjusted p-value < 0.001: ", count_padj_001_lower, "\n")
+cat("Genes with adjusted p-value >= 0.001: ", count_padj_001_higher, "\n")
+```
+
+
+### log2 FC distribution ###
+```{r}
+ggplot(transcriptomics_data, aes(x = log2FoldChange)) +
+  geom_histogram(binwidth = 0.1, fill = "red", color = "black", alpha = 0.7) +
+  theme_minimal() +
+  labs(title = "Distribution of the log2 FC values of the genes", x = "Log2(fold change)", y = "Frequency")
+```
+
+
+### Vulcano PLOTS ####
+```{r}
+transcriptomics_data <- read.csv('log2FC_transcriptomics.csv')
+
+# Determine log10 of the adjusted p-values 
+transcriptomics_data$padj[transcriptomics_data$padj == 0] <- 1e-300
+transcriptomics_data$log10_padj <- -log10(transcriptomics_data$padj)
+
+# Set the upregulated and downregulated genes 
+transcriptomics_data$color <- ifelse(transcriptomics_data$log2FoldChange > 1 & transcriptomics_data$padj < 0.05, "upregulated",                 ifelse(transcriptomics_data$log2FoldChange < -1 & transcriptomics_data$padj < 0.05, "downregulated", "other"))
+
+# Make a vulcano plot 
+ggplot(transcriptomics_data, aes(x = log2FoldChange, y = log10_padj)) +
+  geom_point(aes(color = color), alpha = 0.7) + scale_color_manual(values = c("upregulated" = "red", "downregulated" = "blue", "other" = "gray"), name = "Regulation Status", labels = c("Downregulated", "not significant ",  "Upregulated")) +  
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") + geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") + theme_minimal() + labs(title = "Volcano Plot", x = "log2(fold change)", y = "-log10(Adjusted p-value)") + theme(plot.title = element_text(hjust = 0.5)) 
+
+
+
+# Make a vulcano plot with point size based on Log FC SE 
+ggplot(transcriptomics_data, aes(x = log2FoldChange, y = -log10(padj))) +
+  geom_point(aes(color = color, size = lfcSE), alpha = 0.7, shape = 16) +
+  scale_color_manual(values = c("upregulated" = "red", "downregulated" = "blue", "other" = "gray"),name = "",  labels = c("Downregulated", "Not significant", "Upregulated")) +  
+  scale_size_continuous(name = "Log FC SE", range = c(0.3, 3)) +  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") + geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") + theme_minimal() +  labs(title = "Volcano Plot", x = "log2(Fold Change)", y = "-log10(Adjusted p-value)") + theme(plot.title = element_text(hjust = 0.5))  
+```
+
+
+### MA plot ####
+```{r}
+ggplot(transcriptomics_data, aes(x = log(baseMean), y = log2FoldChange)) +
+  geom_point(aes(color = padj > 0.01), alpha = 0.8, shape = 16, size = 0.8) +
+  scale_color_manual(values = c("red", "black")) +
+  theme_minimal() +
+  labs(title = "MA Plot", x = "log10(mean expression)", y = "Log2(fold change)")
+```
+
+### Stricter p-value adjustment: bonderroni correction ###
+```{r}
+transcriptomics_data$padj_bonferroni <- p.adjust(transcriptomics_data$pvalue, method = "bonferroni")
+
+```
+
+
+
+
