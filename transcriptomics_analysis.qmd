@@ -4,16 +4,25 @@ format: html
 ---
 ```{r}
 transcriptomics_data <- read.csv('log2FC_transcriptomics.csv')
+
+# Make all adjusted p-values that are zero equal to 10^-300
+transcriptomics_data$padj[transcriptomics_data$padj == 0] <- 1e-30
 ```
 
-### 30 genes that are most up and down regulated and are siginificant ###
+### 25 genes that are most up and down regulated and are siginificant ###
 ```{r}
 # Determine the upregulated and downregulated genes 
-significant_genes <- transcriptomics_data[transcriptomics_data$padj <= 0.05, ]
+significant_genes <- transcriptomics_data[transcriptomics_data$padj <= 0.01, ]
 
 
-upregulated_genes <- significant_genes[order(significant_genes$log2FoldChange, decreasing = TRUE), ][1:30, ]
-downregulated_genes <- significant_genes[order(significant_genes$log2FoldChange, decreasing = FALSE), ][1:30, ]
+upregulated_genes <- significant_genes[order(significant_genes$log2FoldChange, decreasing = TRUE), ][1:25, ]
+downregulated_genes <- significant_genes[order(significant_genes$log2FoldChange, decreasing = FALSE), ][1:25, ]
+
+# Make a list with the genes
+up_genes_list <- as.list(upregulated_genes$gene_id)
+down_genes_list <-as.list(downregulated_genes$gene_id)
+
+
 
 ```
 
@@ -46,6 +55,7 @@ cat("Genes with adjusted p-value >= 0.001: ", count_padj_001_higher, "\n")
 
 ### log2 FC distribution ###
 ```{r}
+library('ggplot2')
 ggplot(transcriptomics_data, aes(x = log2FoldChange)) +
   geom_histogram(binwidth = 0.1, fill = "red", color = "black", alpha = 0.7) +
   theme_minimal() +
@@ -56,9 +66,9 @@ ggplot(transcriptomics_data, aes(x = log2FoldChange)) +
 ### Vulcano PLOTS ####
 ```{r}
 transcriptomics_data <- read.csv('log2FC_transcriptomics.csv')
+transcriptomics_data$padj[transcriptomics_data$padj == 0] <- 1e-300
 
 # Determine log10 of the adjusted p-values 
-transcriptomics_data$padj[transcriptomics_data$padj == 0] <- 1e-300
 transcriptomics_data$log10_padj <- -log10(transcriptomics_data$padj)
 
 # Set the upregulated and downregulated genes 
@@ -75,7 +85,12 @@ ggplot(transcriptomics_data, aes(x = log2FoldChange, y = log10_padj)) +
 ggplot(transcriptomics_data, aes(x = log2FoldChange, y = -log10(padj))) +
   geom_point(aes(color = color, size = lfcSE), alpha = 0.7, shape = 16) +
   scale_color_manual(values = c("upregulated" = "red", "downregulated" = "blue", "other" = "gray"),name = "",  labels = c("Downregulated", "Not significant", "Upregulated")) +  
-  scale_size_continuous(name = "Log FC SE", range = c(0.3, 3)) +  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") + geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") + theme_minimal() +  labs(title = "Volcano Plot", x = "log2(Fold Change)", y = "-log10(Adjusted p-value)") + theme(plot.title = element_text(hjust = 0.5))  
+  scale_size_continuous(name = "Log FC SE", range = c(0.5, 3)) +  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") + geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") + theme_minimal() +  labs(title = "Volcano Plot", x = "log2(Fold Change)", y = "-log10(Adjusted p-value)") + theme(plot.title = element_text(hjust = 0.5))  
+
+# Blue and red genes
+genes_red<- nrow(transcriptomics_data[transcriptomics_data$padj < 0.05 & transcriptomics_data$log2FoldChange > 1, ])
+genes_blue <- nrow(transcriptomics_data[transcriptomics_data$padj < 0.05 & transcriptomics_data$log2FoldChange < -1, ])
+
 ```
 
 
