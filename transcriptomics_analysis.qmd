@@ -8,7 +8,7 @@ transcriptomics_data <- read.csv('log2FC_transcriptomics.csv')
 
 ### 30 genes that are most up and down regulated and are siginificant ###
 ```{r}
-# determine the upregulated and downregulated genes 
+# Determine the upregulated and downregulated genes 
 significant_genes <- transcriptomics_data[transcriptomics_data$padj <= 0.05, ]
 
 
