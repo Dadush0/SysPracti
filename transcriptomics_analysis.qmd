@@ -15,15 +15,16 @@ transcriptomics_data$padj[transcriptomics_data$padj == 0] <- 1e-30
 significant_genes <- transcriptomics_data[transcriptomics_data$padj <= 0.01, ]
 
 
-upregulated_genes <- significant_genes[order(significant_genes$log2FoldChange, decreasing = TRUE), ][1:25, ]
-downregulated_genes <- significant_genes[order(significant_genes$log2FoldChange, decreasing = FALSE), ][1:25, ]
+upregulated_genes <- significant_genes[order(significant_genes$log2FoldChange, decreasing = TRUE), ][1:40, ]
+downregulated_genes <- significant_genes[order(significant_genes$log2FoldChange, decreasing = FALSE), ][1:40, ]
 
 # Make a list with the genes
 up_genes_list <- as.list(upregulated_genes$gene_id)
 down_genes_list <-as.list(downregulated_genes$gene_id)
 
 
-
+write.csv(downregulated_genes, "down_40.csv", row.names = FALSE)
+write.csv(upregulated_genes, "up_40.csv", row.names = FALSE)
 ```
 
 ### p-values and number of genes ###
@@ -82,15 +83,17 @@ ggplot(transcriptomics_data, aes(x = log2FoldChange, y = log10_padj)) +
 
 
 # Make a vulcano plot with point size based on Log FC SE 
-ggplot(transcriptomics_data, aes(x = log2FoldChange, y = -log10(padj))) +
+plot <-ggplot(transcriptomics_data, aes(x = log2FoldChange, y = -log10(padj))) +
   geom_point(aes(color = color, size = lfcSE), alpha = 0.7, shape = 16) +
   scale_color_manual(values = c("upregulated" = "red", "downregulated" = "blue", "other" = "gray"),name = "",  labels = c("Downregulated", "Not significant", "Upregulated")) +  
-  scale_size_continuous(name = "Log FC SE", range = c(0.5, 3)) +  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") + geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") + theme_minimal() +  labs(title = "Volcano Plot", x = "log2(Fold Change)", y = "-log10(Adjusted p-value)") + theme(plot.title = element_text(hjust = 0.5))  
+  scale_size_continuous(name = "Log FC SE", range = c(0.5, 3)) +  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") + geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") + theme_minimal() +  labs( x = "log2(Fold Change)", y = "-log10(Adjusted p-value)") + theme(plot.title = element_text(hjust = 0.5))  
 
+plot
 # Blue and red genes
 genes_red<- nrow(transcriptomics_data[transcriptomics_data$padj < 0.05 & transcriptomics_data$log2FoldChange > 1, ])
 genes_blue <- nrow(transcriptomics_data[transcriptomics_data$padj < 0.05 & transcriptomics_data$log2FoldChange < -1, ])
 
+#ggsave("plot.png", plot = plot)
 ```
 
 
@@ -109,6 +112,44 @@ transcriptomics_data$padj_bonferroni <- p.adjust(transcriptomics_data$pvalue, me
 
 ```
 
+
+```{r}
+proteomics_data <- read.csv('proteomics.csv')
+proteomics_data$log2FC_protein_avg <- rowMeans(proteomics_data[, c("log_ratio_1", "log_ratio_2", "log_ratio_3")], na.rm = TRUE)
+proteomics_data <- proteomics_data[!is.na(proteomics_data$log2FC_protein_avg), ]
+
+transcriptomics_data <- read.csv('log2FC_transcriptomics.csv')
+
+
+merged_data <- merge(transcriptomics_data, proteomics_data, 
+                     by.x = "uniprot_id", 
+                     by.y = "protein")
+
+colors <- ifelse(
+  (merged_data$log2FoldChange > 1 & merged_data$log2FC_protein_avg > 1) |
+  (merged_data$log2FoldChange < -1 & merged_data$log2FC_protein_avg < -1),
+  "green", "blue"
+)
+
+# Make plot with thresholds 
+plot_p_t <- ggplot(merged_data, aes(x = log2FoldChange, y = log2FC_protein_avg)) +
+  geom_point(aes(color = colors), size = 3) +
+  scale_color_identity() + 
+  labs(x = "Transcriptomics Log2(FC)",
+       y = "Proteomics avarage log ratio",
+       ) +
+  theme_minimal() +
+  geom_hline(yintercept = c(-1, 1), color = "gray", linetype = "dashed") +
+  geom_vline(xintercept = c(-1, 1), color = "gray", linetype = "dashed") +
+  geom_text_repel(data = merged_data[colors == "green", ], aes(label = gene_name), 
+                  size = 5, box.padding = 0.1,max.overlaps = 5) 
+
+ggsave("plot_prot_trans.png", plot = plot_p_t)
+
+significant_genes <- merged_data[
+  (merged_data$log2FoldChange > 1 & merged_data$log2FC_protein_avg > 1) |
+  (merged_data$log2FoldChange < -1 & merged_data$log2FC_protein_avg < -1), ]
+```
 
 
 
