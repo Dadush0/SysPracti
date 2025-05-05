@@ -3,6 +3,9 @@ title: "transcriptomics_analysis"
 format: html
 ---
 ```{r}
+library('ggplot2')
+library('ggrepel')
+
 transcriptomics_data <- read.csv('log2FC_transcriptomics.csv')
 
 # Make all adjusted p-values that are zero equal to 10^-300
@@ -118,10 +121,14 @@ proteomics_data <- read.csv('proteomics.csv')
 proteomics_data$log2FC_protein_avg <- rowMeans(proteomics_data[, c("log_ratio_1", "log_ratio_2", "log_ratio_3")], na.rm = TRUE)
 proteomics_data <- proteomics_data[!is.na(proteomics_data$log2FC_protein_avg), ]
 
+# filter the proteomics data 
+proteomics_data_f <- proteomics_data[proteomics_data$sd_ratio <= 2, ]
+
 transcriptomics_data <- read.csv('log2FC_transcriptomics.csv')
 
 
-merged_data <- merge(transcriptomics_data, proteomics_data, 
+# merge proteomics and transcriptomics data 
+merged_data <- merge(transcriptomics_data, proteomics_data_f, 
                      by.x = "uniprot_id", 
                      by.y = "protein")
 
@@ -142,14 +149,31 @@ plot_p_t <- ggplot(merged_data, aes(x = log2FoldChange, y = log2FC_protein_avg))
   geom_hline(yintercept = c(-1, 1), color = "gray", linetype = "dashed") +
   geom_vline(xintercept = c(-1, 1), color = "gray", linetype = "dashed") +
   geom_text_repel(data = merged_data[colors == "green", ], aes(label = gene_name), 
-                  size = 5, box.padding = 0.1,max.overlaps = 5) 
+                  size = 5, box.padding = 0.2,max.overlaps = 4) +
+  theme(axis.title.x = element_text(size = 15),  axis.title.y = element_text(size = 15))
 
 ggsave("plot_prot_trans.png", plot = plot_p_t)
 
 significant_genes <- merged_data[
   (merged_data$log2FoldChange > 1 & merged_data$log2FC_protein_avg > 1) |
   (merged_data$log2FoldChange < -1 & merged_data$log2FC_protein_avg < -1), ]
+
+plot_p_t
 ```
 
+```{r}
+
+library(umap)
+
+# select columns for UMAP
+log_ratios <- proteomics_data_f[, c("log_ratio_1", "log_ratio_2", "log_ratio_3")]
+
+
+# Create UMAP
+log_ratios_clean <- na.omit(log_ratios)
+umap_result <- umap(log_ratios_clean)
+plot(umap_result$layout, main = "UMAP of Proteins", xlab = "UMAP1", ylab = "UMAP2", pch = 19)
+
+```
 
 
