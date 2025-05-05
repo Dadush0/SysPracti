@@ -1,0 +1,179 @@
+---
+title: "transcriptomics_analysis"
+format: html
+---
+```{r}
+library('ggplot2')
+library('ggrepel')
+
+transcriptomics_data <- read.csv('log2FC_transcriptomics.csv')
+
+# Make all adjusted p-values that are zero equal to 10^-300
+transcriptomics_data$padj[transcriptomics_data$padj == 0] <- 1e-30
+```
+
+### 25 genes that are most up and down regulated and are siginificant ###
+```{r}
+# Determine the upregulated and downregulated genes 
+significant_genes <- transcriptomics_data[transcriptomics_data$padj <= 0.01, ]
+
+
+upregulated_genes <- significant_genes[order(significant_genes$log2FoldChange, decreasing = TRUE), ][1:40, ]
+downregulated_genes <- significant_genes[order(significant_genes$log2FoldChange, decreasing = FALSE), ][1:40, ]
+
+# Make a list with the genes
+up_genes_list <- as.list(upregulated_genes$gene_id)
+down_genes_list <-as.list(downregulated_genes$gene_id)
+
+
+write.csv(downregulated_genes, "down_40.csv", row.names = FALSE)
+write.csv(upregulated_genes, "up_40.csv", row.names = FALSE)
+```
+
+### p-values and number of genes ###
+```{r}
+
+# 0.05
+count_padj_05_lower <- sum(transcriptomics_data$padj < 0.05)
+count_padj_05_higher <- sum(transcriptomics_data$padj >= 0.05)
+
+# 0.01
+count_padj_01_lower <- sum(transcriptomics_data$padj < 0.01)
+count_padj_01_higher <- sum(transcriptomics_data$padj >= 0.01)
+
+# 0.001
+count_padj_001_lower <- sum(transcriptomics_data$padj < 0.001)
+count_padj_001_higher <- sum(transcriptomics_data$padj >= 0.001)
+
+# number of genes higher or lower then some p-value 
+cat("Genes with adjusted p-value < 0.05: ", count_padj_05_lower, "\n")
+cat("Genes with adjusted p-value >= 0.05: ", count_padj_05_higher, "\n")
+
+cat("Genes with adjusted p-value < 0.01: ", count_padj_01_lower, "\n")
+cat("Genes with adjusted p-value >= 0.01: ", count_padj_01_higher, "\n")
+
+cat("Genes with adjusted p-value < 0.001: ", count_padj_001_lower, "\n")
+cat("Genes with adjusted p-value >= 0.001: ", count_padj_001_higher, "\n")
+```
+
+
+### log2 FC distribution ###
+```{r}
+library('ggplot2')
+ggplot(transcriptomics_data, aes(x = log2FoldChange)) +
+  geom_histogram(binwidth = 0.1, fill = "red", color = "black", alpha = 0.7) +
+  theme_minimal() +
+  labs(title = "Distribution of the log2 FC values of the genes", x = "Log2(fold change)", y = "Frequency")
+```
+
+
+### Vulcano PLOTS ####
+```{r}
+transcriptomics_data <- read.csv('log2FC_transcriptomics.csv')
+transcriptomics_data$padj[transcriptomics_data$padj == 0] <- 1e-300
+
+# Determine log10 of the adjusted p-values 
+transcriptomics_data$log10_padj <- -log10(transcriptomics_data$padj)
+
+# Set the upregulated and downregulated genes 
+transcriptomics_data$color <- ifelse(transcriptomics_data$log2FoldChange > 1 & transcriptomics_data$padj < 0.05, "upregulated",                 ifelse(transcriptomics_data$log2FoldChange < -1 & transcriptomics_data$padj < 0.05, "downregulated", "other"))
+
+# Make a vulcano plot 
+ggplot(transcriptomics_data, aes(x = log2FoldChange, y = log10_padj)) +
+  geom_point(aes(color = color), alpha = 0.7) + scale_color_manual(values = c("upregulated" = "red", "downregulated" = "blue", "other" = "gray"), name = "Regulation Status", labels = c("Downregulated", "not significant ",  "Upregulated")) +  
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") + geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") + theme_minimal() + labs(title = "Volcano Plot", x = "log2(fold change)", y = "-log10(Adjusted p-value)") + theme(plot.title = element_text(hjust = 0.5)) 
+
+
+
+# Make a vulcano plot with point size based on Log FC SE 
+plot <-ggplot(transcriptomics_data, aes(x = log2FoldChange, y = -log10(padj))) +
+  geom_point(aes(color = color, size = lfcSE), alpha = 0.7, shape = 16) +
+  scale_color_manual(values = c("upregulated" = "red", "downregulated" = "blue", "other" = "gray"),name = "",  labels = c("Downregulated", "Not significant", "Upregulated")) +  
+  scale_size_continuous(name = "Log FC SE", range = c(0.5, 3)) +  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") + geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") + theme_minimal() +  labs( x = "log2(Fold Change)", y = "-log10(Adjusted p-value)") + theme(plot.title = element_text(hjust = 0.5))  
+
+plot
+# Blue and red genes
+genes_red<- nrow(transcriptomics_data[transcriptomics_data$padj < 0.05 & transcriptomics_data$log2FoldChange > 1, ])
+genes_blue <- nrow(transcriptomics_data[transcriptomics_data$padj < 0.05 & transcriptomics_data$log2FoldChange < -1, ])
+
+#ggsave("plot.png", plot = plot)
+```
+
+
+### MA plot ####
+```{r}
+ggplot(transcriptomics_data, aes(x = log(baseMean), y = log2FoldChange)) +
+  geom_point(aes(color = padj > 0.01), alpha = 0.8, shape = 16, size = 0.8) +
+  scale_color_manual(values = c("red", "black")) +
+  theme_minimal() +
+  labs(title = "MA Plot", x = "log10(mean expression)", y = "Log2(fold change)")
+```
+
+### Stricter p-value adjustment: bonderroni correction ###
+```{r}
+transcriptomics_data$padj_bonferroni <- p.adjust(transcriptomics_data$pvalue, method = "bonferroni")
+
+```
+
+
+```{r}
+proteomics_data <- read.csv('proteomics.csv')
+proteomics_data$log2FC_protein_avg <- rowMeans(proteomics_data[, c("log_ratio_1", "log_ratio_2", "log_ratio_3")], na.rm = TRUE)
+proteomics_data <- proteomics_data[!is.na(proteomics_data$log2FC_protein_avg), ]
+
+# filter the proteomics data 
+proteomics_data_f <- proteomics_data[proteomics_data$sd_ratio <= 2, ]
+
+transcriptomics_data <- read.csv('log2FC_transcriptomics.csv')
+
+
+# merge proteomics and transcriptomics data 
+merged_data <- merge(transcriptomics_data, proteomics_data_f, 
+                     by.x = "uniprot_id", 
+                     by.y = "protein")
+
+colors <- ifelse(
+  (merged_data$log2FoldChange > 1 & merged_data$log2FC_protein_avg > 1) |
+  (merged_data$log2FoldChange < -1 & merged_data$log2FC_protein_avg < -1),
+  "green", "blue"
+)
+
+# Make plot with thresholds 
+plot_p_t <- ggplot(merged_data, aes(x = log2FoldChange, y = log2FC_protein_avg)) +
+  geom_point(aes(color = colors), size = 3) +
+  scale_color_identity() + 
+  labs(x = "Transcriptomics Log2(FC)",
+       y = "Proteomics avarage log ratio",
+       ) +
+  theme_minimal() +
+  geom_hline(yintercept = c(-1, 1), color = "gray", linetype = "dashed") +
+  geom_vline(xintercept = c(-1, 1), color = "gray", linetype = "dashed") +
+  geom_text_repel(data = merged_data[colors == "green", ], aes(label = gene_name), 
+                  size = 5, box.padding = 0.2,max.overlaps = 4) +
+  theme(axis.title.x = element_text(size = 15),  axis.title.y = element_text(size = 15))
+
+ggsave("plot_prot_trans.png", plot = plot_p_t)
+
+significant_genes <- merged_data[
+  (merged_data$log2FoldChange > 1 & merged_data$log2FC_protein_avg > 1) |
+  (merged_data$log2FoldChange < -1 & merged_data$log2FC_protein_avg < -1), ]
+
+plot_p_t
+```
+
+```{r}
+
+library(umap)
+
+# select columns for UMAP
+log_ratios <- proteomics_data_f[, c("log_ratio_1", "log_ratio_2", "log_ratio_3")]
+
+
+# Create UMAP
+log_ratios_clean <- na.omit(log_ratios)
+umap_result <- umap(log_ratios_clean)
+plot(umap_result$layout, main = "UMAP of Proteins", xlab = "UMAP1", ylab = "UMAP2", pch = 19)
+
+```
+
+
