@@ -1173,4 +1173,299 @@ ggsave("biological_variation_corrected.png", plot = biological_variation_correct
 anova_result_bio_corrected <- aov(slope ~ factor(phosphate_mM), data = growth_fits_extended_filtered)
 summary(anova_result_bio_corrected)
 
+
+```
+
+## Part II
+
+```{r}
+##Read files
+transcriptomics <- read.csv('Data/log2FC_transcriptomics.csv')
+proteomics <- read.csv('Data/Proteomics.csv')
+
+#check for missing data
+sum(is.na(transcriptomics$log2FoldChange))
+sum(is.na(transcriptomics$padj))
+
+#Check for missing data in proteomics
+sum(is.na(proteomics$log_ratio_1))
+sum(is.na(proteomics$log_ratio_2))
+sum(is.na(proteomics$log_ratio_3))
+sum(is.na(proteomics$avg_ratio))
+
+#Filter out the rows that are all na
+proteomics_clean <- proteomics |>
+  filter(!(is.na(log_ratio_1) & is.na(log_ratio_2) & is.na(log_ratio_3)))
+
+sum(is.na(proteomics_clean$avg_ratio))
+
+#re calculate average
+proteomics_clean$avg_ratio_recalculated <- rowMeans(
+  proteomics_clean[, c("log_ratio_1", "log_ratio_2", "log_ratio_3")])
+
+#re calculate sd
+proteomics_clean$sd_ratio_2 <- apply(
+  proteomics_clean[, c("log_ratio_1", "log_ratio_2", "log_ratio_3")],
+  1,
+  sd
+)
+
+
+```
+
+```{r}
+#Proteomics data analysis
+#pivot for ploting
+proteomics_long <- proteomics_clean |>
+  pivot_longer(
+    cols = c(log_ratio_1, log_ratio_2, log_ratio_3),
+    names_to = "replicate",
+    values_to = "log_ratio"
+  )
+
+#check distribution of log ratios
+ggplot(proteomics_long, aes(x = protein, y = log_ratio, color = replicate)) +
+  geom_point(position = position_dodge(width = 0.5), size = 0.7, alpha = 0.7) +
+  theme_minimal() +
+  labs(
+    x = "Protein",
+    y = "Log Ratio",
+    color = "Replicate"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)
+  )
+
+#check sd distribution
+ggplot(proteomics_long, aes(x = protein, y = sd_ratio)) +
+  geom_point(position = position_dodge(width = 0.5), size = 0.7) +
+  theme_minimal() +
+  labs(
+    x = "Protein",
+    y = "sd"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)
+  )
+
+
+proteomics_clean <- proteomics_clean |>
+  mutate(
+    significant = case_when(
+      avg_ratio < -0.5  ~ "downregulated",
+      avg_ratio > 0.5 ~ "upregulated",
+      TRUE ~ "not_significant"
+    )
+  )
+
+top_proteins_upregulated <- proteomics_clean |>
+  filter(significant == 'upregulated') |>
+  arrange(desc(abs(avg_ratio))) |>
+  slice(1:50) |>
+  filter(sd_ratio_2 < 1)
+  
+top_proteins_downregulated <- proteomics_clean |>
+  filter(significant == 'downregulated') |>
+  arrange(desc(abs(avg_ratio))) |>
+  slice(1:50) |>
+  filter(sd_ratio_2 < 1)
+
+top_proteins_with_high_sd <- proteomics_clean |>
+  arrange(desc(abs(avg_ratio))) |>
+  slice(1:50) |>
+  filter(sd_ratio_2 > 1)
+
+proteomics_clean <- proteomics_clean |>
+  mutate(
+    top_protein = ifelse(protein %in% top_proteins$protein, "Top", "Other")
+  )
+
+#Plot top proteins
+ggplot(proteomics_clean, aes(x = protein, y = avg_ratio, fill = top_protein)) +
+  geom_bar(stat = 'identity') +
+  scale_fill_manual(values = c("Top" = "firebrick2", "Other" = "grey70")) +
+  theme_minimal() +
+  labs(
+    x = "Protein",
+    y = "Average Log Ratio",
+    fill = "Protein group",
+    title = "Highlighting Top Proteins"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)
+  )
+
+
+
+writeLines(top_proteins_downregulated$protein, "top_proteins_downregulated.txt")
+
+install.packages("pheatmap")
+
+top_proteins_mat <- top_proteins |>
+  filter(significant == 'downregulated')|>
+  select(protein, avg_ratio) |>
+  column_to_rownames("protein") |>
+  as.matrix()
+
+pheatmap(
+  mat = top_proteins_mat,
+  color = colorRampPalette(c("dodgerblue3", "white", "firebrick2"))(50),
+  cluster_rows = TRUE,      # cluster proteins
+  cluster_cols = FALSE,      # cluster replicates
+  scale = "none",           # don't rescale the values
+  main = "Top changing proteins (clustered)",
+  fontsize_row = 4,
+  fontsize_col = 10
+)
+```
+
+```{r}
+library(ggrepel)
+##transcriptomcis analysis
+transcriptomics <- transcriptomics |>
+  mutate(
+    significant = case_when(
+      padj < 0.05 & log2FoldChange > 1 ~ "upregulated",
+      padj < 0.05 & log2FoldChange < -1 ~ "downregulated",
+      TRUE ~ "not_significant"
+    )
+  )
+
+
+top_genes <- transcriptomics |>
+  filter(padj >0 )|>
+  arrange(padj) |>
+  slice(1:10)
+
+ggplot(transcriptomics |> filter(padj > 0), aes(x = log2FoldChange, y = -log10(padj), color = significant))+
+  geom_point(size = 0.7) +
+  scale_color_manual(values = c(
+    "upregulated" = "firebrick2",
+    "downregulated" = "firebrick2",
+    "not_significant" = "gray70"
+  )) +
+  geom_vline(xintercept =c(1,-1))+
+  geom_hline(yintercept = -log10(0.05))+
+  theme_minimal() +
+  geom_text_repel(
+  data = top_genes,
+  aes(label = gene_name),
+  size = 3,
+  max.overlaps = Inf
+  )+
+  labs(
+    color = "Regulation",
+    x = expression(Log[2]~Fold~Change),
+    y = expression(-Log[10]~Adjusted~P~value)
+  )
+
+
+top_genes_list <- transcriptomics |>
+  filter(padj >0)|>
+  filter(padj < 0.05)|>
+  filter(log2FoldChange > 1 | log2FoldChange < -1) |>
+  arrange(padj)
+
+
+gene_ids <- paste0("syn:", top_genes_list$uniprot_id)
+writeLines(top_genes_list$uniprot_id, "significant_gene_ids.txt")
+
+```
+
+```{r}
+if (!requireNamespace("KEGGREST", quietly = TRUE)) {
+  install.packages("KEGGREST")
+}
+library(KEGGREST)
+map_genes_to_ko <- function(gene_ids) {
+  # Get all links from synechocystis genes to KO terms
+  all_links <- keggLink("ko", "syn")
+
+  # Make a table
+  link_df <- data.frame(
+    gene = sub("syn:", "", names(all_links)),
+    KO = sub("ko:", "", all_links)
+  )
+
+  # Filter for your gene_ids
+  mapped_genes <- link_df |> 
+    filter(gene %in% gene_ids)
+
+  return(mapped_genes)
+}
+
+# Now run
+kegg_mapped_genes <- map_genes_to_ko(top_genes_list$gene_id)
+write.table(
+  kegg_mapped_genes,
+  file = "kegg_mapped_genes.txt",
+  sep = "\t",        # tab separated
+  row.names = FALSE, # do not write row numbers
+  col.names = FALSE, # no header, KEGG expects no column names
+  quote = FALSE      # do not add quotes
+)
+```
+
+```{r}
+transcriptomics_proteomics_merged <- inner_join(
+  transcriptomics,
+  proteomics_clean,
+  by = c('uniprot_id' = 'protein')
+)
+
+top_merged <- transcriptomics_proteomics_merged |>
+  filter(padj >0)|>
+  filter(padj < 0.05)#|>
+  #filter(log2FoldChange > 1 | log2FoldChange < -1) |>
+  #filter(avg_ratio > 0.5 | avg_ratio < -0.5) |>
+  #arrange(padj)
+
+
+
+heatmap_data <- top_merged |>
+  dplyr::select(gene_id, log2FoldChange, avg_ratio) |>
+  column_to_rownames(var = "gene_id") |>  # Make gene_id the row names
+  as.matrix()
+
+# 2. Optional: scale the data
+# heatmap_data <- scale(heatmap_data)
+
+# 3. Plot heatmap
+pheatmap(heatmap_data,
+         cluster_rows = TRUE,
+         cluster_cols = FALSE, # you can cluster columns too if you want
+         color = colorRampPalette(c("dodgerblue3", "white", "firebrick3"))(100),
+         main = "Transcriptomics vs Proteomics Changes",
+         labels_col = c("Transcriptomics", "Proteomics"))
+
+kegg_mapped_genes_merged <- map_genes_to_ko(top_merged$gene_id)
+write.table(
+  kegg_mapped_genes_merged,
+  file = "kegg_mapped_genes_merged.txt",
+  sep = "\t",        # tab separated
+  row.names = FALSE, # do not write row numbers
+  col.names = FALSE, # no header, KEGG expects no column names
+  quote = FALSE      # do not add quotes
+)
+
+
+
+ggplot(top_merged, aes(x = avg_ratio, y = log2FoldChange)) +
+  geom_point(size = 2, color = "midnightblue") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+  theme_minimal() +
+  labs(
+    x = "Proteomics avg ratio",
+    y = "Transcriptomics log2 Fold Change",
+    title = "Proteomics vs Transcriptomics Changes"
+  )
+
+top_merged_inverse <- top_merged |>
+  filter((avg_ratio_recalculated < -0.25 & log2FoldChange > 0.25) | (avg_ratio_recalculated > 0.25 & log2FoldChange < 0.25))
+
+
+top_merged_prop <- top_merged |>
+  filter((avg_ratio_recalculated > 0.25 & log2FoldChange > 0.25) | (avg_ratio_recalculated < -0.25 & log2FoldChange < -0.25))
+writeLines(top_merged_inverse$uniprot_id, "inverse_prot_ids.txt")
 ```
