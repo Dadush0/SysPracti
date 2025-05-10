@@ -1,3 +1,4 @@
+<<<<<<< Updated upstream
 ---
 title: "SBiP"
 format: html
@@ -1471,3 +1472,1627 @@ top_merged_prop <- top_merged |>
   filter((avg_ratio_recalculated > 0.25 & log2FoldChange > 0.25) | (avg_ratio_recalculated < -0.25 & log2FoldChange < -0.25))
 writeLines(top_merged_inverse$uniprot_id, "inverse_prot_ids.txt")
 ```
+=======
+---
+title: "SBiP"
+format: html
+editor: visual
+---
+
+```{r}
+###packages 
+
+library(dplyr)
+library(readr)
+library(readxl)
+library(ggplot2)
+library(tidyr)
+library(broom)
+library(purrr)
+library(GGally)
+library(glmnet)
+library(knitr)
+library(e1071)
+library(party)
+library(gridExtra)
+library(cowplot)
+library(patchwork)
+library(ggExtra)
+library(knitr)
+library(kableExtra) 
+library(ggdag)
+
+```
+
+## Part I
+
+```{r}
+## reading the data
+
+experimental_set_up <- read.csv('Data/Design.csv')
+
+spectrophotometer<- read.csv('Data/Spectrophotometer.csv')
+
+turbidostat<- read.csv('Data/Turbidostat.csv')
+```
+
+```{r}
+###do pigment calculations
+spectrophotometer$Chl_A <- 10.186 * (spectrophotometer$od_value_685 - spectrophotometer$od_value_730) - 0.08
+spectrophotometer$Phy <- (spectrophotometer$od_value_634 - spectrophotometer$od_value_730) / spectrophotometer$od_value_730
+
+###plot pigment data
+
+spectrophotometer <- left_join(spectrophotometer, experimental_set_up, by = "channel")  
+
+summary_pigments <- spectrophotometer |> 
+  group_by(phosphate_mM) |>
+  summarise(
+    mean_Chl_A = mean(Chl_A),
+    mean_Phy = mean(Phy),
+    sd_Chl_A = sd(Chl_A),
+    sd_Phy = sd(Phy),
+    n= n(),
+    .groups = 'drop'
+  )
+
+Chl_A_plot <- ggplot(summary_pigments, aes(x = as.factor(phosphate_mM), y = mean_Chl_A, fill = as.factor(phosphate_mM))) +
+  geom_bar(stat = "identity", width = 0.7) +
+  geom_errorbar(aes(ymin = mean_Chl_A - 1.96 * (sd_Chl_A / sqrt(n)),
+ymax = mean_Chl_A + 1.96 * (sd_Chl_A / sqrt(n))),
+                width = 0.2) +
+  scale_fill_manual(values = c("goldenrod2", "cornflowerblue")) + 
+  labs(
+    x = "[Phosphate] (mM)",
+    y = expression("Chl a (mg Chl a·L"^{-1}*")")
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    text = element_text(size = 10)
+  )
+
+Chl_A_plot
+
+Phy_plot <- ggplot(summary_pigments, aes(x = as.factor(phosphate_mM), y = mean_Phy, fill = as.factor(phosphate_mM))) +
+  geom_bar(stat = "identity", width = 0.7) +
+  geom_errorbar(aes(ymin = mean_Phy - 1.96 * (sd_Phy / sqrt(n)),
+  ymax = mean_Phy + 1.96 * (sd_Phy / sqrt(n))),
+                width = 0.2) +
+  scale_fill_manual(values = c("goldenrod2", "cornflowerblue")) + 
+  labs(
+    x = "[Phosphate] (mM)",
+    y = expression("Phycobilisomes content")
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    text = element_text(size = 10)
+  )
+
+Phy_plot
+
+pigmen_plot <- plot_grid(Chl_A_plot,Phy_plot, labels = c("A", "B"), ncol = 2)
+
+ggsave("pigmen_plot.png", plot = pigmen_plot, width = 7, height = 5, dpi = 300, units = "in")
+
+anova_result_chl_a <- aov(Chl_A ~ factor(phosphate_mM), data = spectrophotometer)
+summary(anova_result_chl_a)
+
+anova_result_phy <- aov(Phy ~ factor(phosphate_mM), data = spectrophotometer)
+summary(anova_result_phy)
+```
+
+```{r}
+## add conditions to turbidostat data
+turbidostat <- left_join(turbidostat, experimental_set_up, by = "channel")
+
+##plot OD vs time for each channel
+turbidostat$facet_label <- paste0("Channel ", turbidostat$channel, " — ", turbidostat$purpose)
+
+turbidostat_facet_plot <- ggplot(turbidostat, aes( x= time_h, y = OD))+
+  geom_point(size = 0.04, color = "black") +
+  facet_wrap(~ facet_label) +
+  scale_y_continuous(limits = c(0, 0.5)) + 
+  scale_x_continuous(limits = c(280, 400)) + 
+  labs(x = "Time (h)", y = expression(OD[720])) +
+  theme_minimal()+
+  theme(
+    text = element_text(size = 10),
+    legend.title = element_text(size = 9),
+    legend.text = element_text(size = 7)
+  )
+
+
+turbidostat_facet_plot
+ggsave("turbidostat_facet_plot.png", plot = turbidostat_facet_plot, width = 7, height = 5, dpi = 300, units = "in")
+
+
+
+#####
+
+
+plot_OD_by_channel <- function(data, threshold = 0.35) {
+  channels <- unique(data$channel)
+
+  plots <- lapply(seq_along(channels), function(i) {
+    ch <- channels[i]
+    subset_data <- data |>
+      filter(channel == ch) |>
+      arrange(time_h) |>
+      mutate(highlight = lead(decision, default = last(decision)) != decision)
+
+    phosphate <- as.character(subset_data$phosphate_mM.x[1])
+
+    show_x <- i %in% c(4, 5, 6)  #only bottom row
+    show_y <- i %in% c(1, 4)     #only left column
+
+    p <- ggplot(subset_data, aes(x = time_h, y = OD, color = highlight)) +
+      geom_point(size = 0.8) +
+      scale_color_manual(
+        values = c("FALSE" = "dodgerblue2", "TRUE" = "darkorange1"),
+        labels = c("FALSE" = "Off", "TRUE" = "On"),
+        drop = FALSE
+      ) +
+      scale_y_continuous(limits = c(0, 0.5)) +
+      labs(
+        x = if (show_x) "Time (h)" else NULL,
+        y = if (show_y) expression(OD[720]) else NULL,
+        color = "Pump",
+        title = paste0("Channel ", ch, " - ", phosphate, " mM")
+      ) +
+      theme_minimal() +
+      theme(
+        plot.title = element_text(face = "bold", hjust = 0.5, size = 12),
+        text = element_text(size = 11),
+        axis.title.x = element_text(size = 11),
+        axis.title.y = element_text(size = 11),
+        legend.position = if (i == 1) "bottom" else "none",
+        axis.text.x = element_text(size = 11),
+        axis.text.y = element_text(size = 11)
+      )
+
+    return(p)
+  })
+
+  return(plots)
+}
+
+
+od_plots <- plot_OD_by_channel(turbidostat)
+
+
+combined_od_plot <- (od_plots[[1]] + od_plots[[2]] + od_plots[[3]]) /
+              (od_plots[[4]] + od_plots[[5]] + od_plots[[6]]) +
+              plot_layout(guides = "collect") &
+              theme(legend.position = "bottom")
+
+ggsave("combined_od_plot.png", plot = combined_od_plot, width = 7, height = 5, dpi = 300, units = "in")
+```
+
+```{r}
+
+plot_OD_fits_by_channel <- function(data, threshold = 0.35) {
+  channels <- unique(data$channel)
+
+  plots <- lapply(seq_along(channels), function(i) {
+    ch <- channels[i]
+    subset_data <- data |>
+      filter(channel == ch) |>
+      arrange(time_h) |>
+      mutate(highlight = lead(decision, default = last(decision)) != decision)
+
+    phosphate <- as.character(subset_data$phosphate_mM[1])
+
+    show_x <- i %in% c(4, 5, 6)  #only bottom row
+    show_y <- i %in% c(1, 4)     #only left column
+
+    p <- ggplot(subset_data, aes(x = time_h, y = log(OD), color = highlight)) +
+      geom_point(size = 0.8) +
+      scale_color_manual(
+        values = c("FALSE" = "dodgerblue2", "TRUE" = "darkorange1"),
+        labels = c("FALSE" = "Off", "TRUE" = "On"),
+        drop = FALSE
+      ) +
+      labs(
+        x = if (show_x) "Time (h)" else NULL,
+        y = if (show_y) expression(ln(OD[720])) else NULL,
+        color = "Pump",
+        title = paste0("Channel ", ch, " - ", phosphate, " mM")
+      ) +
+      theme_minimal() +
+      theme(
+        plot.title = element_text(face = "bold", hjust = 0.5, size = 12),
+        
+        text = element_text(size = 11),
+        axis.title.x = element_text(size = 11),
+        axis.title.y = element_text(size = 11),
+        legend.position = if (i == 1) "bottom" else "none",
+        axis.text.x = element_text(size = 11),
+        axis.text.y = element_text(size = 11)
+      )
+
+    #add LM fit lines
+    for (d in unique(subset_data$decision)) {
+      group_data <- subset_data |> filter(decision == d)
+      p <- p + geom_smooth(
+        data = group_data,
+        method = "lm", se = FALSE,
+        color = "black", size = 0.7, linetype = "dashed"
+      )
+    }
+
+    return(p)
+  })
+
+  return(plots)
+}
+
+#generate plots
+OD_plots <- plot_OD_fits_by_channel(turbidostat)
+
+#combine them (2 rows, 3 cols) with legend at bottom
+final_OD_plot <- (OD_plots[[1]] + OD_plots[[2]] + OD_plots[[3]]) /
+                 (OD_plots[[4]] + OD_plots[[5]] + OD_plots[[6]]) +
+                 plot_layout(guides = "collect") &
+                 theme(legend.position = "bottom")
+
+
+final_OD_plot
+
+
+ggsave("final_lnOD_plot.png", plot = final_OD_plot, width = 7, height = 5, dpi = 300, units = "in")
+
+
+
+
+####
+
+
+# join all results of lm in a table to analyze better
+ln_OD_results <- function(data) {
+  results <- data |>
+    group_by(channel, decision) |>
+    summarise(
+      purpose = unique(purpose),
+      phosphate_mM = unique(phosphate_mM),
+      slope = coef(lm(log(OD) ~ time_h))[["time_h"]],
+      r_squared = summary(lm(log(OD) ~ time_h))$r.squared,
+      time_start = min(time_h),
+      time_end = max(time_h),
+      .groups = "drop"
+    ) |>
+    mutate(time_range = paste0(round(time_start, 1), "–", round(time_end, 1))) |>
+    dplyr::select(channel, purpose,phosphate_mM, slope, r_squared, decision, time_range)
+  
+  return(results)
+}
+
+
+ln_OD_table <- ln_OD_results(turbidostat)
+ln_OD_table
+
+#format the table for LaTeX
+latex_ready_table <- ln_OD_table |>
+  mutate(
+    `Phosphate (mM)` = formatC(phosphate_mM, format = "f", digits = 4),
+    `Growth rate $\\mu$ (h$^{-1}$)` = formatC(slope, format = "e", digits = 2),
+    `$R^2$` = formatC(r_squared, format = "f", digits = 2)
+  ) |>
+  dplyr::select(
+    Channel = channel,
+    Purpose = purpose,
+    `Phosphate (mM)`,
+    Decision = decision,
+    `Time range (h)` = time_range,
+    `Growth rate $\\mu$ (h$^{-1}$)`,
+    `$R^2$`
+  )
+
+#LaTeX table
+latex_table <- kable(
+  latex_ready_table,
+  format = "latex",
+  booktabs = TRUE,
+  escape = FALSE,
+  caption = "Estimated growth rates ($\\mu$) and $R^2$ values per channel and condition."
+) |>
+  kable_styling(
+    latex_options = c("striped", "hold_position"),
+    full_width = FALSE,
+    font_size = 10
+  )
+
+#Save to a .tex file
+writeLines(latex_table, "ln_OD_table.tex")
+
+```
+
+```{r}
+
+#filter data to exclude low-quality fits
+ln_OD_table_filtered <- ln_OD_table |> 
+  filter(r_squared >= 0.9)
+
+ln_OD_table_filtered <- ln_OD_table_filtered |> 
+  group_by(channel) |>
+  mutate(
+    mean_slope_channel = mean(slope),
+    sd_slope_channel = sd(slope)
+  ) |> 
+  ungroup()
+
+ln_OD_table_filtered <- ln_OD_table_filtered |> 
+  group_by(phosphate_mM) |>
+  mutate(
+    mean_slope_phosphate = mean(slope),
+    sd_slope_phosphate = sd(slope),
+    n = n()
+  ) |> 
+  ungroup()
+
+
+ln_OD_table_filtered$phosphate_mM <- as.factor(ln_OD_table_filtered$phosphate_mM)
+levels(ln_OD_table_filtered$phosphate_mM)
+
+growth_rate_violin <- ggplot(ln_OD_table_filtered, aes(x = factor(channel), y = slope, fill = phosphate_mM)) +
+  geom_violin(trim = FALSE, color = "black", alpha = 0.7, linewidth = 0.3) + 
+  scale_y_continuous(limits = c(0, 0.025)) +
+  geom_jitter(aes(color = phosphate_mM), width = 0.1, size = 2, shape = 21) + 
+  labs(
+    x = "Channel",
+    y = expression(mu~(h^{-1})),
+    fill = 'Phosphate (mM)',
+    color = 'Phosphate (mM)'
+  ) +
+  scale_fill_manual(values = c("0.0115" = "goldenrod2", "0.23" = "cornflowerblue")) +
+  scale_color_manual(values = c("0.0115" = "goldenrod4", "0.23" = "royalblue4")) + 
+  theme_minimal() +
+  theme(
+    text = element_text(size = 11),
+    legend.position = 'bottom',
+  )
+growth_rate_violin
+
+ggsave("growth_rate_violin.png", plot = growth_rate_violin, width = 7, height = 5, dpi = 300, units = "in")
+```
+
+```{r}
+technical_variation <- ggplot(ln_OD_table_filtered, aes(x = factor(channel), y = mean_slope_channel, fill = phosphate_mM )) +
+  geom_bar(stat = "identity", position = 'dodge') +
+  scale_y_continuous(limits = c(0, 0.02), expand = c(0, 0))+
+  labs(
+    x = "Channel",
+    y = expression(mu~(h^{-1})),
+    fill = 'Phosphate (mM)'
+  ) +
+  scale_fill_manual(values = c("0.0115" = "goldenrod2", "0.23" = "cornflowerblue")) +
+  geom_errorbar(aes(ymin = mean_slope_channel - 2*sd_slope_channel, ymax = mean_slope_channel + 2*sd_slope_channel,width = 0.2),  position = 'dodge',
+  width = 0.2)+
+  theme_minimal() +
+  theme(
+    text = element_text(size = 11),
+    legend.position = 'bottom',
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(size = 10)
+  )
+
+technical_variation
+
+
+ggsave("technical_variation.png", plot = technical_variation, width = 7, height = 5, dpi = 300, units = "in")
+
+anova_result_technical <- aov(slope ~ factor(channel), data = ln_OD_table_filtered)
+summary(anova_result_technical)
+TukeyHSD(anova_result_technical)
+```
+
+```{r}
+
+
+biological_variation <- ggplot(ln_OD_table_filtered, aes(x = factor(phosphate_mM), y = mean_slope_phosphate, fill = phosphate_mM)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.7) +
+  labs(
+    x = "Phosphate (mM)",
+    y = expression(mu~(h^{-1}))
+  ) +
+  scale_fill_manual(values = c('0.0115' = "goldenrod2", '0.23' = "cornflowerblue")) +
+  guides(fill = "none")+
+  geom_errorbar(aes(ymin = mean_slope_phosphate - 1.96 * (sd_slope_phosphate / sqrt(n)),
+ymax = mean_slope_phosphate + 1.96 * (sd_slope_phosphate / sqrt(n)),width = 0.2))+
+  theme_minimal() +
+  theme(
+    text = element_text(size = 10),
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(size = 10)
+  )
+
+biological_variation
+
+ggsave("biological_variation.png", plot = biological_variation, width = 3.5, height = 5, dpi = 300, units = "in")
+
+anova_result_bio <- aov(slope ~ factor(phosphate_mM), data = ln_OD_table_filtered)
+summary(anova_result_bio)
+
+```
+
+```{r}
+#extra plots
+#Merge pigment and growth data
+combined <- ln_OD_table_filtered |>
+  group_by(channel) |>
+  summarise(mu = mean(slope)) |>
+  left_join(spectrophotometer, by = "channel")
+
+#Scatter plots
+ggplot(combined, aes(x = mu, y = Chl_A, colour = factor(phosphate_mM))) +
+  geom_point(size = 3) +
+  scale_color_manual(values = c("0.0115" = "goldenrod2", "0.23" = "cornflowerblue"))+
+  labs(x = expression(mu~(h^{-1})), y = 'Chl a (mg/L)') +
+  theme_minimal()
+
+ggplot(combined, aes(x = mu, y = Phy, colour = factor(phosphate_mM))) +
+  geom_point(size = 3) +
+  scale_color_manual(values = c("0.0115" = "goldenrod2", "0.23" = "cornflowerblue"))+
+  labs(x = expression(mu~(h^{-1})), y = 'Phy content') +
+  #geom_smooth(method = "lm", se = FALSE, linetype = "dashed", size = 1.2) +
+  theme_minimal()
+
+
+ggplot(combined, aes(x = Chl_A, y = Phy, colour = factor(phosphate_mM))) +
+  geom_point(size = 3) +
+  scale_color_manual(values = c("0.0115" = "goldenrod2", "0.23" = "cornflowerblue"))+
+  labs(x = 'ChlA', y = 'Phy content') +
+  #geom_smooth(method = "lm", se = FALSE, linetype = "dashed", size = 1.2) +
+  theme_minimal()
+
+
+
+```
+
+```{r}
+library(dplyr)
+###Read ploidy data
+casy <- read_csv('Data/Casy.csv')
+qpcr <- read_csv('Data/Qpcr.csv')
+
+std_fragment <- readLines('Data/standard_fragment_sequence.txt')
+
+
+###Correct for dilutions
+casy_corrected_dilutions <- casy
+casy_corrected_dilutions$counts_corrected <- casy$counts * (1/(casy_corrected_dilutions$sample_volume/casy_corrected_dilutions$casyton_volume))*casy_corrected_dilutions$sample_dilution*1000/casy_corrected_dilutions$measurement_volume
+
+casy_corrected_dilutions <- casy_corrected_dilutions |>
+  left_join(experimental_set_up, by = "channel")
+
+#MC cells
+
+casy_corrected_dilutions_mc <- casy_corrected_dilutions |>
+  filter(sample_type %in% 'MC')
+
+
+casy_mc_summary <- casy_corrected_dilutions_mc |>
+  group_by(channel) |>
+  summarise(
+    mean_counts = mean(counts_corrected),
+    .groups = "drop"
+  )
+
+MC_cells <- ggplot(casy_mc_summary, aes(x = as.factor(channel), y = mean_counts))+
+  geom_bar(stat = 'identity', fill = 'darkgray')+
+  labs(
+    x = "Channel",
+    y = 'MC cells/mL'
+  )+
+  theme_minimal()
+
+
+ggsave("MC_cells.png", plot = MC_cells, width = 7, height = 5, dpi = 300, units = "in")
+
+########abb_bbb cells
+
+casy_corrected_dilutions_bbb_abb <- casy_corrected_dilutions |>
+  filter(sample_type %in% c('ABB','BBB'))
+
+casy_bbb_abb_summary <- casy_corrected_dilutions_bbb_abb |>
+  group_by(channel, sample_type) |>
+  summarise(
+    mean_counts = mean(counts_corrected),
+    .groups = "drop"
+  )
+
+abb_bbb_plot <- ggplot(casy_bbb_abb_summary, aes(x = as.factor(channel), y = mean_counts, fill = sample_type))+
+  scale_fill_manual(
+    values = c("ABB" = "lightpink3", "BBB" = "seagreen3")
+  ) +
+    labs(
+    x = "Channel",
+    y = 'Cells/mL',
+    fill = 'Sample type'
+  )+
+  geom_bar(stat = 'identity', position = 'dodge')+
+  theme_minimal()+
+  theme(
+    legend.position = "right"
+  )
+
+ggsave("abb_bbb_plot.png", plot = abb_bbb_plot, width = 7, height = 5, dpi = 300, units = "in")
+
+
+#Calculate number of broken cells
+replicate_counts <- casy_corrected_dilutions_bbb_abb |>
+  dplyr::select(channel, sample_type, counts_corrected, replicate) |>
+  pivot_wider(
+    names_from = sample_type,
+    values_from = counts_corrected
+  )
+
+
+broken_cells <- replicate_counts |>
+  group_by(channel) |>
+  summarise(
+    mean_diff = mean(BBB - ABB),
+    var_ABB = var(ABB),
+    var_BBB = var(BBB),
+    cov_AB = cov(ABB, BBB, use = "complete.obs"),
+    sd_diff = sqrt(var_ABB + var_BBB - 2 * cov_AB), #this is error propagation assuming covariance
+    .groups = "drop"
+  )
+
+
+broken_cells_plot <- ggplot(broken_cells, aes(x = as.factor(channel), y = mean_diff))+
+  geom_bar(stat = 'identity', fill = 'darkgray')+
+  labs(
+    x = "Channel",
+    y = 'Number of broken cells/mL'
+  )+
+  theme_minimal()
+
+ggsave("broken_cells_plot.png", plot = broken_cells_plot, width = 7, height = 5, dpi = 300, units = "in")
+
+lysis_efficiency <- casy_corrected_dilutions_bbb_abb |>
+  dplyr::select(channel, sample_type, counts_corrected, replicate) |>
+  pivot_wider(names_from = sample_type, values_from = counts_corrected) |>
+  group_by(channel) |>
+  summarise(
+    mean_diff = mean(BBB - ABB),
+    var_ABB = var(ABB),
+    var_BBB = var(BBB),
+    cov_AB = cov(ABB, BBB, use = "complete.obs"),
+    sd_diff = sqrt(var_ABB + var_BBB - 2 * cov_AB),
+    mean_BBB = mean(BBB),  # temporary value used below
+    lysis_efficiency = (mean_diff / mean_BBB)*100,
+    .groups = "drop"
+  )
+
+
+lysis_efficiency_plot <- ggplot(lysis_efficiency, aes(x = as.factor(channel), y = lysis_efficiency))+
+  geom_bar(stat = 'identity', fill = 'darkgray')+
+  labs(
+    x = "Channel",
+    y = 'Lysis efficiency (%)'
+  )+
+  theme_minimal()
+
+broken_and_efficiency <- plot_grid(broken_cells_plot,lysis_efficiency_plot, labels = c("A", "B"), ncol = 2)
+
+ggsave("broken_and_efficiency.png", plot = broken_and_efficiency, width = 7, height = 5, dpi = 300, units = "in")
+```
+
+```{r}
+
+#Split tables
+qpcr_samples <- qpcr |> filter(sample_class == "sample")
+
+
+
+qpcr_standards <- qpcr|> filter(sample_class == "standard")
+initial_concentration <- 0.04 #ng/ul
+
+avogadro <- 6.023*10^(23)
+qpcr_standards_corrected <- qpcr_standards
+mol_mass_fragment = 670469.73 #g/mol
+
+
+initial_concentration <- initial_concentration * 10^(-9) * avogadro / mol_mass_fragment
+
+qpcr_standards_corrected$dna_conc <- 
+  (initial_concentration/qpcr_standards_corrected$dilution_factor)*((qpcr_standards_corrected$template_vol/qpcr_standards_corrected$final_vol)) #this is in mol/ul
+
+
+```
+
+```{r}
+
+library(broom)
+
+plot_qpcr_with_fit <- function(data, reps = c("1", "2", "3")) {
+  #filter for selected replicates
+  filtered_data <- data |>
+    filter(as.character(replicate) %in% reps) |>
+    mutate(replicate = as.factor(replicate))
+  
+  #fit single line to log10 of conc
+  model <- lm(Ct ~ log10(dna_conc), data = filtered_data)
+  tidy_fit <- tidy(model)
+  glance_fit <- glance(model)
+  
+  
+  #extraxt values
+  slope <- tidy_fit$estimate[2]
+  intercept <- tidy_fit$estimate[1]
+  r2 <- glance_fit$r.squared
+  E <- 10^(-1 / slope)
+  percent_E <- (E - 1) * 100
+  
+  stats_table <- tibble(
+    replicates_used = paste(reps, collapse = " "),
+    slope = slope,
+    intercept = intercept,
+    R2 = r2,
+    Efficiency = E,
+    Efficiency_percent = percent_E
+  )
+  
+  #plot with all replicates colored
+  plot <- ggplot(filtered_data, aes(x = log10(dna_conc), y = Ct, color = replicate)) +
+    geom_point(size = 3) +
+    geom_smooth(method = "lm", se = TRUE, color = "black", linetype = "dashed", size = 1) +
+    scale_color_manual(
+      values = c("1" = "darkseagreen4", "2" = "darkorchid3", "3" = "orangered2"),
+      drop = FALSE
+    ) +
+    labs(
+      x = expression(Log[10]~DNA~concentration~(mol/µL)),
+      y = "Ct value",
+      color = "Replicate",
+      title = paste("Replicates used:", paste(reps, collapse = ", "))
+    ) +
+    theme_minimal()+
+  theme(
+    plot.title = element_text(size = 15),
+    axis.title = element_text(size = 12),
+    legend.position = "bottom"
+  )
+  
+  return(list(
+    plot = plot,
+    stats = stats_table
+  ))
+}
+
+library(purrr)
+summarize_qpcr_combinations <- function(data) {
+  combos <- list(
+    "1"     = c("1"),
+    "2"     = c("2"),
+    "3"     = c("3"),
+    "1 2"   = c("1", "2"),
+    "1 3"   = c("1", "3"),
+    "2 3"   = c("2", "3"),
+    "1 2 3" = c("1", "2", "3")
+  )
+
+  stats_list <- list()
+  plot_list <- list()
+  
+  for (name in names(combos)) {
+    reps <- combos[[name]]
+    fit <- plot_qpcr_with_fit(data, reps = reps)
+    
+    stats_list[[name]] <- fit$stats
+    plot_list[[name]] <- fit$plot
+  }
+  
+  #combine stats
+  stats_table <- bind_rows(stats_list, .id = "replicate_combo")
+
+  return(list(
+    stats = stats_table,
+    plots = plot_list
+  ))
+}
+
+qpcr_summary_std <- summarize_qpcr_combinations(qpcr_standards_corrected)
+qpcr_summary_std$stats
+qpcr_plots_curves <- qpcr_summary_std$plots
+
+qpcr_plots_curves
+
+for (i in seq_along(qpcr_plots_curves)) {
+  plot <- qpcr_plots_curves[[i]]
+  filename <- paste0("qpcr_plots/qpcr_plot_", i, ".png")
+  
+  ggsave(
+    filename,
+    plot = plot,
+    width = 7, height = 5,
+    dpi = 300, units = "in"
+  )
+}
+
+
+r2_summary <- ggplot(qpcr_summary_std$stats, aes(x = replicates_used, y = R2))+
+  geom_point(color = 'midnightblue')+
+  theme_minimal()+
+  scale_y_continuous(limits = c(0.98,1))+
+  geom_hline(yintercept = 0.99, color = 'firebrick3')+
+    theme(
+    axis.text.x = element_text(angle = 90, hjust = 1)
+  )+
+  labs(
+    x = "Replicates used",
+    y = expression(R^2)
+  )
+
+efficiency_summary <- ggplot(qpcr_summary_std$stats, aes(x = replicates_used, y = Efficiency_percent))+
+  geom_point(color = 'midnightblue')+
+  theme_minimal()+
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1)
+  )+
+  scale_y_continuous(limits = c(80,120))+
+  geom_hline(yintercept = 95, color = 'firebrick3')+
+  geom_hline(yintercept = 105, color = 'firebrick3')+
+  labs(
+    x = "Replicates used",
+    y = 'Efficiency %'
+  )
+
+
+slopes_summary <- ggplot(qpcr_summary_std$stats, aes(x = replicates_used, y = slope))+
+  geom_point(color = 'midnightblue')+
+  theme_minimal()+
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1)
+  )+
+  scale_y_continuous(limits = c(-4,-2))+
+  geom_hline(yintercept = -3.32, color = 'firebrick3')+
+  labs(
+    x = "Replicates used",
+    y = 'Slope'
+  )
+
+qpcr_summary_plot <- plot_grid(r2_summary,efficiency_summary, slopes_summary, labels = c("A", "B", "C"), ncol = 3)
+
+ggsave("qpcr_summary_plot.png", plot = qpcr_summary_plot, width = 7, height = 4, dpi = 300, units = "in")
+
+```
+
+ggplot(qpcr_samples, aes(x = channel, y = dna_conc, colour = as.factor(dilution_factor)))+
+
+geom_point()+
+
+geom_boxplot()
+
+```{r}
+#Dna conc calculation in sample
+slope <- qpcr_summary_std$stats$slope[1]
+intercept <- qpcr_summary_std$stats$intercept[1]
+qpcr_samples$dna_conc <- 10^((qpcr_samples$Ct-intercept)/slope)*qpcr_samples$final_vol/qpcr_samples$template_vol*qpcr_samples$dilution_factor*2 #get ct, minus intercept, divide by slope. all of that power of 10 to remove log. then corret for sampling volume and dilution factor.
+
+
+
+dna_conc_plot <- ggplot(qpcr_samples, aes(x = as.factor(channel), y = dna_conc)) +
+  geom_boxplot() +
+  geom_point(aes(colour = as.factor(dilution_factor)), position = position_jitter(width = 0.2), size = 2) +
+  labs(x = "Channel", y = "DNA concentration (mol/µL)", colour = "Dilution factor") +
+  theme_minimal()
+
+ggsave("dna_conc_plot.png", plot = dna_conc_plot, width = 7, height = 5, dpi = 300, units = "in")
+
+ploidy_results <- qpcr_samples |> 
+  dplyr::select(channel, dna_conc) |>
+  left_join(experimental_set_up, by = "channel") |>
+  left_join(broken_cells |> dplyr::select(channel, mean_diff, sd_diff), by = "channel")
+
+ploidy_results$dna_conc_frag_ml <-  ploidy_results$dna_conc*1000 #change to mol/ml
+
+ploidy_results$ploidy_estimation <- ploidy_results$dna_conc_frag_ml/ploidy_results$mean_diff #divide by nb of 'broken' cells
+
+ploidy_summary <- ploidy_results |>
+  group_by(phosphate_mM) |>
+  summarise(
+    mean_ploidy = mean(ploidy_estimation),
+    sd_ploidy = sd(ploidy_estimation),
+    n = n(),
+    .groups = "drop"
+  ) |>
+  mutate(
+    ci95 = 1.96 * sd_ploidy / sqrt(n)
+  )
+
+ploidy_plot <- ggplot(ploidy_summary, aes(x = as.factor(phosphate_mM), y = mean_ploidy, fill = as.factor(phosphate_mM))) +
+  scale_fill_manual(values = c("0.0115" = "goldenrod2", "0.23" = "cornflowerblue"))+
+  geom_bar(stat = 'identity') +
+  geom_errorbar(aes(ymin = mean_ploidy - ci95, ymax = mean_ploidy + ci95), width = 0.2) +
+  labs(x = "Phosphate (mM)", y = "chr/cell") +
+  theme_minimal()+
+  theme(
+    legend.position = 'none'
+  )
+
+ggsave("ploidy_plot.png", plot = ploidy_plot, width = 7, height = 5, dpi = 300, units = "in")
+
+anova_ploidy <- aov(ploidy_estimation ~ factor(phosphate_mM), data = ploidy_results)
+summary(anova_ploidy)
+```
+
+```         
+TACAGGTTACTGGTCGCTCTCCCCAACAGGGCAAAGGTAAGTCAGCAGCAACTTGGTGCTTAACCCTAGA
+AGGTTTGAGTCCGGGGCAATGGCGACCCCTGACCCCTTGGGAAGAAAATTTTTGCCAGCAACTCTTAACG
+GGAAATCCCAATGGTCCCTGGCAGAAAAAATTTGGCGATCGCCGTTGATCAAGGCTCCCTCCCCCCAGGG
+CATTAAAATAGGAACAGTTGCCGAACTCCCTATCAAGCCGAATCATTAATC
+```
+
+```{r}
+library(slider)
+
+
+slope_threshold <- 0.001 #from what value do we consider 'positive'
+window_n <- 6   #nb of time points to use in each rolling regression
+required_consecutive <- 3 #how many slopes in a row should be positive to consider start of exp phase
+
+growth_fits <- turbidostat |>
+  group_by(channel, decision) |>
+  arrange(time_h) |> #just in case the time column is not ordered 
+  group_split() |> #split ech channel/decision into smaller df
+  map_dfr(function(df) {#go over each of the df we have for each channel/decision
+    slopes <- slide_index_dbl(
+      .x = df,
+      .i = seq_len(nrow(df)), #row numbers
+      .f = ~ {
+        if (nrow(.x) < window_n) return(NA) #if we are at the start, we have no previous 4 points,this gives error so check first.
+        fit <- lm(log(OD) ~ time_h, data = .x) #fitting
+        coef(fit)[2] #get slope
+      },
+      .before = window_n - 1,
+      .complete = TRUE
+    )
+
+    df$rolling_slope <- slopes
+
+    is_positive <- slopes > slope_threshold #chec if slope is positive
+    is_positive[is.na(is_positive)] <- FALSE #store result
+
+    #Use sliding sum to check for consecutive positivs
+    check_consecutive <- slider::slide_dbl(is_positive, sum, .before = 0, .after = required_consecutive - 1) #is this, and the next 2 positive? store result of conseq positives
+
+    #find the first timepoint where required number of consecutive positives occur
+    start_idx <- which(check_consecutive >= required_consecutive)[1]
+    if (is.na(start_idx)) return(NULL) #if the conseq are more than the required this is the starting point of the exponential phase
+
+    exp_phase <- df |> slice(start_idx:n()) #grab the values that are after the starting point
+#then just fit as always!!!!
+    fit <- lm(log(OD) ~ time_h, data = exp_phase)
+    coef <- coef(fit)
+    r2 <- summary(fit)$r.squared
+
+    tibble(
+      channel = df$channel[1],
+      decision = df$decision[1],
+      start_time = df$time_h[start_idx],
+      time_end = df$time_h[nrow(df)],
+      slope = coef[2],
+      intercept = coef[1],
+      r_squared = r2
+    )
+  })
+
+growth_fits
+plot_OD_fits_with_exp_start <- function(data, fits, threshold = 0.35) {
+  channels <- unique(data$channel)
+
+  plots <- lapply(seq_along(channels), function(i) {
+    ch <- channels[i]
+    subset_data <- data |>
+      filter(channel == ch) |>
+      arrange(time_h) |>
+      mutate(highlight = lead(decision, default = last(decision)) != decision)
+
+    #get exp fits for channel
+    fit_lines <- fits |> filter(channel == ch)
+
+    phosphate <- as.character(subset_data$phosphate_mM[1])
+
+    show_x <- i %in% c(4, 5, 6)  #only for prettier plot
+    show_y <- i %in% c(1, 4)     
+    
+    subset_data <- subset_data |>
+  left_join(fits |> filter(channel == ch), by = "decision") |>
+  mutate(
+    phase = case_when(
+      time_h < start_time ~ "pre_exp",#save if we are in pre or not for pretty ploting 
+      TRUE ~ as.character(highlight)  #TRUE" or "FALSE"
+    )
+  )
+
+#set custom colors
+color_vals <- c(
+  "pre_exp" = "gray70",      #points not considered for calcuation
+  "FALSE" = "dodgerblue2",  # pump off
+  "TRUE" = "darkorange1"    # pump on
+)
+
+label_vals <- c(
+  "pre_exp" = "Pre-exp",
+  "FALSE" = "Pump off",
+  "TRUE" = "Pump on"
+)
+
+#plot
+p <- ggplot(subset_data, aes(x = time_h, y = log(OD), color = phase)) +
+  geom_point(size = 0.8) +
+  scale_color_manual(values = color_vals, labels = label_vals, drop = FALSE) +
+  labs(
+    x = if (show_x) "Time (h)" else NULL,
+    y = if (show_y) expression(ln(OD[720])) else NULL,
+    color = "Phase",
+    title = paste0("Channel ", ch, " - ", phosphate, " mM")
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 12),
+    text = element_text(size = 11),
+    axis.title.x = element_text(size = 11),
+    axis.title.y = element_text(size = 11),
+    legend.position = if (i == 1) "bottom" else "none",
+    axis.text.x = element_text(size = 11),
+    axis.text.y = element_text(size = 11)
+  )
+
+#vertical line at start of exp phase
+if (nrow(fit_lines) > 0) {
+  p <- p + geom_vline(data = fit_lines, aes(xintercept = start_time),
+                      linetype = "dotted", color = "black", linewidth = 0.5)
+}
+
+#add real exponential phase fits, the ones we just calculated
+for (j in seq_len(nrow(fit_lines))) {#loop over exponential fits
+  f <- fit_lines[j, ] #grab each decision period
+exp_data <- subset_data |> 
+  filter(decision == f$decision, time_h >= f$start_time) |>#select points in the decision we are in, and that are in the exp fase
+  mutate(fitted = f$intercept + f$slope * time_h)#calculate the y of fitted values according to wwhat we just calculated
+
+p <- p + geom_line(
+  data = exp_data,
+  aes(x = time_h, y = fitted),
+  inherit.aes = FALSE,
+  color = "black",
+  linewidth = 0.7,
+  linetype = "dashed"
+)
+}
+    return(p)
+  })
+
+  return(plots)
+}
+
+
+OD_plots_exp <- plot_OD_fits_with_exp_start(turbidostat, growth_fits)
+
+final_OD_plot_exp <- (OD_plots_exp[[1]] + OD_plots_exp[[2]] + OD_plots_exp[[3]]) /
+                     (OD_plots_exp[[4]] + OD_plots_exp[[5]] + OD_plots_exp[[6]]) +
+                     plot_layout(guides = "collect") &
+                     theme(legend.position = "bottom")
+
+final_OD_plot_exp
+suppressMessages(print(final_OD_plot_exp))
+ggsave("final_lnOD_plot_with_exp_start.png", plot = final_OD_plot_exp, width = 7, height = 5, dpi = 300, units = "in")
+
+###export table
+
+#join design data
+growth_fits_extended <- growth_fits |>
+  left_join(experimental_set_up, by = "channel") |>
+  mutate(
+    time_range = paste0(round(start_time, 1), "–",  round(time_end, 1))
+  )
+
+#format for latex
+latex_ready_growth_table <- growth_fits_extended |>
+  mutate(
+    `Phosphate (mM)` = formatC(phosphate_mM, format = "f", digits = 4),
+    `Growth rate $\\mu$ (h$^{-1}$)` = formatC(slope, format = "e", digits = 2),
+    `$R^2$` = formatC(r_squared, format = "f", digits = 2)
+  ) |>
+  dplyr::select(
+    Channel = channel,
+    Purpose = purpose,
+    `Phosphate (mM)`,
+    Decision = decision,
+    `Time range (h)` = time_range,
+    `Growth rate $\\mu$ (h$^{-1}$)`,
+    `$R^2$`
+  )
+
+latex_growth_table <- kable(
+  latex_ready_growth_table,
+  format = "latex",
+  booktabs = TRUE,
+  escape = FALSE,
+  caption = "Estimated growth rates ($\\mu$) and $R^2$ values based on automated exponential phase detection."
+) |>
+  kable_styling(
+    latex_options = c("striped", "hold_position"),
+    full_width = FALSE,
+    font_size = 10
+  )
+
+#save
+writeLines(latex_growth_table, "auto_growth_fits_table.tex")
+
+
+
+comparison_table <- ln_OD_table |> 
+  dplyr::select(channel, decision, r2_before = r_squared) |>
+  inner_join(growth_fits |> dplyr::select(channel, decision, r2_after = r_squared), 
+             by = c("channel", "decision"))
+
+#identify changes across the 0.9 threshold
+r2_dropped <- comparison_table |> 
+  filter(r2_before > 0.9, r2_after <= 0.9)
+
+r2_improved <- comparison_table |> 
+  filter(r2_before <= 0.9, r2_after > 0.9)
+
+r2_dropped
+r2_improved
+```
+
+```{r}
+#correction of downstream plots after using fish hook correction
+#repeated what was done before only changing vars
+#Filter data to exclude low-quality fits
+growth_fits_extended_filtered <- growth_fits_extended |> 
+  filter(r_squared >= 0.9)
+
+growth_fits_extended_filtered <- growth_fits_extended_filtered |> 
+  group_by(channel) |>
+  mutate(
+    mean_slope_channel = mean(slope),
+    sd_slope_channel = sd(slope)
+  ) |> 
+  ungroup()
+
+growth_fits_extended_filtered <- growth_fits_extended_filtered |> 
+  group_by(phosphate_mM) |>
+  mutate(
+    mean_slope_phosphate = mean(slope),
+    sd_slope_phosphate = sd(slope),
+    n = n()
+  ) |> 
+  ungroup()
+
+
+growth_fits_extended_filtered$phosphate_mM <- as.factor(growth_fits_extended_filtered$phosphate_mM)
+levels(growth_fits_extended_filtered$phosphate_mM)
+
+growth_rate_violin_corrected <- ggplot(growth_fits_extended_filtered, aes(x = factor(channel), y = slope, fill = phosphate_mM)) +
+  geom_violin(trim = FALSE, color = "black", alpha = 0.7, linewidth = 0.3) + 
+  scale_y_continuous(limits = c(0, 0.025)) +
+  geom_jitter(aes(color = phosphate_mM), width = 0.1, size = 2, shape = 21) + 
+  labs(
+    x = "Channel",
+    y = expression(mu~(h^{-1})),
+    fill = 'Phosphate (mM)',
+    color = 'Phosphate (mM)'
+  ) +
+  scale_fill_manual(values = c("0.0115" = "goldenrod2", "0.23" = "cornflowerblue")) +
+  scale_color_manual(values = c("0.0115" = "goldenrod4", "0.23" = "royalblue4")) + 
+  theme_minimal() +
+  theme(
+    text = element_text(size = 11),
+    legend.position = 'bottom',
+  )
+growth_rate_violin_corrected
+
+ggsave("growth_rate_violin_corrected.png", plot = growth_rate_violin_corrected, width = 7, height = 5, dpi = 300, units = "in")
+
+
+
+technical_variation_corrected <- ggplot(growth_fits_extended_filtered, aes(x = factor(channel), y = mean_slope_channel, fill = phosphate_mM )) +
+  geom_bar(stat = "identity", position = 'dodge') +
+  scale_y_continuous(limits = c(0, 0.02), expand = c(0, 0))+
+  labs(
+    x = "Channel",
+    y = expression(mu~(h^{-1})),
+    fill = 'Phosphate (mM)'
+  ) +
+  scale_fill_manual(values = c("0.0115" = "goldenrod2", "0.23" = "cornflowerblue")) +
+  geom_errorbar(aes(ymin = mean_slope_channel - 2*sd_slope_channel, ymax = mean_slope_channel + 2*sd_slope_channel,width = 0.2),  position = 'dodge',
+  width = 0.2)+
+  theme_minimal() +
+  theme(
+    text = element_text(size = 11),
+    legend.position = 'bottom',
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(size = 10)
+  )
+
+technical_variation_corrected
+
+
+ggsave("technical_variation_corrected.png", plot = technical_variation_corrected, width = 7, height = 5, dpi = 300, units = "in")
+
+anova_result_technical_corrected <- aov(slope ~ factor(channel), data = growth_fits_extended_filtered)
+summary(anova_result_technical_corrected)
+TukeyHSD(anova_result_technical_corrected)
+
+
+
+
+biological_variation_corrected <- ggplot(growth_fits_extended_filtered, aes(x = factor(phosphate_mM), y = mean_slope_phosphate, fill = phosphate_mM)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.7) +
+  labs(
+    x = "Phosphate (mM)",
+    y = expression(mu~(h^{-1}))
+  ) +
+  scale_fill_manual(values = c('0.0115' = "goldenrod2", '0.23' = "cornflowerblue")) +
+  guides(fill = "none")+
+  geom_errorbar(aes(ymin = mean_slope_phosphate - 1.96 * (sd_slope_phosphate / sqrt(n)),
+ymax = mean_slope_phosphate + 1.96 * (sd_slope_phosphate / sqrt(n)),width = 0.2))+
+  theme_minimal() +
+  theme(
+    text = element_text(size = 10),
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(size = 10)
+  )
+
+biological_variation_corrected
+
+ggsave("biological_variation_corrected.png", plot = biological_variation_corrected, width = 3.5, height = 5, dpi = 300, units = "in")
+
+anova_result_bio_corrected <- aov(slope ~ factor(phosphate_mM), data = growth_fits_extended_filtered)
+summary(anova_result_bio_corrected)
+
+
+```
+
+## Part II
+
+```{r}
+##Read files
+transcriptomics <- read.csv('Data/log2FC_transcriptomics.csv')
+proteomics <- read.csv('Data/Proteomics.csv')
+
+#check for missing data
+sum(is.na(transcriptomics$log2FoldChange))
+sum(is.na(transcriptomics$padj))
+
+#Check for missing data in proteomics
+sum(is.na(proteomics$log_ratio_1))
+sum(is.na(proteomics$log_ratio_2))
+sum(is.na(proteomics$log_ratio_3))
+sum(is.na(proteomics$avg_ratio))
+
+#Filter out the rows that are all na
+proteomics_clean <- proteomics |>
+  filter(!(is.na(log_ratio_1) & is.na(log_ratio_2) & is.na(log_ratio_3)))
+
+sum(is.na(proteomics_clean$avg_ratio))
+
+#re calculate average
+proteomics_clean$avg_ratio_recalculated <- rowMeans(
+  proteomics_clean[, c("log_ratio_1", "log_ratio_2", "log_ratio_3")])
+
+#re calculate sd
+proteomics_clean$sd_ratio_2 <- apply(
+  proteomics_clean[, c("log_ratio_1", "log_ratio_2", "log_ratio_3")],
+  1,
+  sd
+)
+
+
+```
+
+```{r}
+#Proteomics data analysis
+#pivot for ploting
+proteomics_long <- proteomics_clean |>
+  pivot_longer(
+    cols = c(log_ratio_1, log_ratio_2, log_ratio_3),
+    names_to = "replicate",
+    values_to = "log_ratio"
+  )
+
+#check distribution of log ratios
+ggplot(proteomics_long, aes(x = protein, y = log_ratio, color = replicate)) +
+  geom_jitter(width = 0.2, size = 1.2, alpha = 0.7, na.rm = FALSE) +
+  scale_color_manual(values = c("log_ratio_1" = "firebrick1", "log_ratio_2" = "dodgerblue2", "log_ratio_3" = "seagreen")) +
+  labs(
+    title = "Protein log-ratio values across replicates",
+    x = "Protein",
+    y = "Log Ratio",
+    color = "Replicate"
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.grid.major.x = element_blank(),
+    legend.position = "bottom",
+    plot.title = element_text(size = 10, face = "bold", hjust = 0.5)
+  )
+
+#check sd distribution
+ggplot(proteomics_long, aes(x = protein, y = sd_ratio)) +
+  geom_point(position = position_dodge(width = 0.5), size = 0.7) +
+  theme_minimal() +
+  labs(
+    x = "Protein",
+    y = "sd"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)
+  )
+
+######
+#set threshold for analysis
+threshold <- 1
+
+#add label of significance
+proteomics_clean <- proteomics_clean |>
+  mutate(
+    significant = case_when(
+      avg_ratio < -threshold  ~ "downregulated",
+      avg_ratio > threshold ~ "upregulated",
+      TRUE ~ "not_significant"
+    )
+  )
+
+#plot significance
+ggplot(proteomics_clean, aes(x = protein, y = avg_ratio, colour = significant)) +
+  geom_point(position = position_dodge(width = 0.5), size = 0.7) +
+  labs(
+    x = "Protein",
+    y = "Median log ratio"
+  ) +
+  theme_minimal()+
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)
+  )
+
+
+
+#upregulated top proteins with sd lower than 1
+top_proteins_upregulated <- proteomics_clean |>
+  filter(significant == 'upregulated') |>
+  arrange(desc(abs(avg_ratio))) #|>
+  #slice(1:50) |>
+  #filter(sd_ratio_2 < 1)
+  
+#downregulated top proteins with sd lower than 1
+top_proteins_downregulated <- proteomics_clean |>
+  filter(significant == 'downregulated') |>
+  arrange(desc(abs(avg_ratio))) #|>
+  #slice(1:50) |>
+  #filter(sd_ratio_2 < 1)
+
+top_proteins_with_high_sd <- proteomics_clean |>
+  arrange(desc(abs(avg_ratio))) #|>
+  #slice(1:50) |>
+  #filter(sd_ratio_2 > 1)
+
+
+writeLines(top_proteins_downregulated$protein, "top_proteins_downregulated_all.txt")
+
+
+library(forcats)
+
+# Order proteins by avg_ratio
+proteomics_clean <- proteomics_clean |> 
+  mutate(protein = fct_reorder(protein, avg_ratio))
+
+# Plot
+ggplot(proteomics_clean, aes(x = protein, y = avg_ratio, fill = significant)) +
+  geom_col(width = 0.7) +
+  scale_fill_manual(
+    values = c(
+      "upregulated" = "#E41A1C",
+      "downregulated" = "#377EB8",
+      "not_significant" = "gray80"
+    ),
+    name = "Significance"
+  ) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black", linewidth = 0.5) +
+  labs(
+    x = "Protein",
+    y = "Median log ratio",
+    title = "Differential Protein Expression"
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    plot.title = element_text(face = "bold", size = 12),
+    legend.position = "top"
+  )
+```
+
+```{r}
+threshold = 1
+##Check what happens with proteomics NA in transcriptomics
+
+merged_with_na <- inner_join(
+  transcriptomics,
+  proteomics,
+  by = c('uniprot_id' = 'protein')
+)
+
+filtered_merged_with_na <- merged_with_na |>
+  filter(is.na(avg_ratio))
+
+filtered_merged_with_na_not_sign<- merged_with_na |>
+  filter(is.na(avg_ratio)) |>
+  filter(padj > 0.05)
+
+filtered_merged_with_na_sign_upreg <- merged_with_na |>
+  filter(is.na(avg_ratio)) |>
+  filter(padj< 0.05) |>
+  filter(log2FoldChange > threshold)
+
+filtered_merged_with_na_sign_upreg$uniprot_id
+
+
+filtered_merged_with_na_sign_downreg <- merged_with_na |>
+  filter(is.na(avg_ratio)) |>
+  filter(padj< 0.05) |>
+  filter(log2FoldChange < -threshold)
+
+filtered_merged_with_na_sign_downreg$uniprot_id
+
+
+writeLines(filtered_merged_with_na_sign$uniprot_id, "filtered_merged_with_na_sign.txt")
+
+writeLines(filtered_merged_with_na_not_sign$uniprot_id, "filtered_merged_with_na_not_sign.txt")
+
+
+#volcano plot of only these 
+
+ggplot(filtered_merged_with_na |> filter(padj < 0.05), aes(x = log2FoldChange, y = -log10(padj), color = significant))+
+  scale_y_continuous(limits = c(0,330))+
+  geom_point(size = 0.7) +
+  scale_color_manual(values = c(
+    "upregulated" = "firebrick2",
+    "downregulated" = "firebrick2",
+    "not_significant" = "gray70"
+  )) +
+  geom_vline(xintercept =c(1,-1))+
+  geom_hline(yintercept = -log10(0.05))+
+  theme_minimal() +
+  # geom_text_repel(
+  # data = top_genes,
+  # aes(label = gene_name),
+  # size = 3,
+  # max.overlaps = Inf
+  # )+
+  labs(
+    color = "Regulation",
+    x = expression(Log[2]~Fold~Change),
+    y = expression(-Log[10]~Adjusted~P~value)
+  )
+```
+
+```{r}
+library(ggrepel)
+##transcriptomcis analysis
+transcriptomics <- transcriptomics |>
+  mutate(
+    significant = case_when(
+      padj < 0.05 & log2FoldChange > threshold ~ "upregulated",
+      padj < 0.05 & log2FoldChange < -threshold ~ "downregulated",
+      TRUE ~ "not_significant"
+    )
+  )
+
+
+#put very low value for pvalues = 0 
+lowest_padj <- sort(unique(transcriptomics$padj))[2]
+transcriptomics <- transcriptomics |>
+  mutate(padj = ifelse(padj == 0, lowest_padj, padj))
+
+
+
+top_genes <- transcriptomics |>
+  arrange(padj) |>
+  slice(1:40)
+
+ggplot(transcriptomics |> filter(padj < 0.05), aes(x = log2FoldChange, y = -log10(padj), color = significant))+
+  scale_y_continuous(limits = c(0,330))+
+  geom_point(size = 0.7) +
+  scale_color_manual(values = c(
+    "upregulated" = "firebrick2",
+    "downregulated" = "firebrick2",
+    "not_significant" = "gray70"
+  )) +
+  geom_vline(xintercept =c(threshold,-threshold))+
+  geom_hline(yintercept = -log10(0.05))+
+  theme_minimal() +
+  geom_text_repel(
+  data = top_genes,
+  aes(label = gene_name),
+  size = 3,
+  max.overlaps = Inf
+  )+
+  labs(
+    color = "Regulation",
+    x = expression(Log[2]~Fold~Change),
+    y = expression(-Log[10]~Adjusted~P~value)
+  )
+
+
+upregulated_transcriptomics <- transcriptomics |>
+  filter(padj < 0.05)|>
+  filter(log2FoldChange > threshold) |>
+  arrange(padj)
+
+downregulated_transcriptomics <- transcriptomics |>
+  filter(padj < 0.05)|>
+  filter(log2FoldChange < threshold) |>
+  arrange(padj)
+
+gene_ids <- paste0("syn:", upregulated_transcriptomics$uniprot_id)
+
+writeLines(downregulated_transcriptomics$uniprot_id, "downregulated_transcriptomics_uniprot_ids_threshold_1.txt")
+
+writeLines(upregulated_transcriptomics$uniprot_id, "upregulated_transcriptomics_uniprot_ids_threshold_1.txt")
+
+
+```
+
+```{r}
+if (!requireNamespace("KEGGREST", quietly = TRUE)) {
+  install.packages("KEGGREST")
+}
+library(KEGGREST)
+map_genes_to_ko <- function(gene_ids) {
+  # Get all links from synechocystis genes to KO terms
+  all_links <- keggLink("ko", "syn")
+
+  # Make a table
+  link_df <- data.frame(
+    gene = sub("syn:", "", names(all_links)),
+    KO = sub("ko:", "", all_links)
+  )
+
+  # Filter for your gene_ids
+  mapped_genes <- link_df |> 
+    filter(gene %in% gene_ids)
+
+  return(mapped_genes)
+}
+
+# Now run
+kegg_mapped_genes <- map_genes_to_ko(top_genes_list$gene_id)
+write.table(
+  kegg_mapped_genes,
+  file = "kegg_mapped_genes.txt",
+  sep = "\t",        # tab separated
+  row.names = FALSE, # do not write row numbers
+  col.names = FALSE, # no header, KEGG expects no column names
+  quote = FALSE      # do not add quotes
+)
+```
+
+```{r}
+
+#merge transcriptomics and proteomics data
+transcriptomics_proteomics_merged <- inner_join(
+  transcriptomics,
+  proteomics_clean,
+  by = c('uniprot_id' = 'protein')
+)
+
+#Grab the significant
+top_merged <- transcriptomics_proteomics_merged |>
+  filter(padj < 0.05) #|>
+  # filter(log2FoldChange > 0.25 | log2FoldChange < -0.25) |>
+  # filter(avg_ratio > 0.5 | avg_ratio < -0.5) #|>
+  #arrange(padj)
+
+#Grab upregulated in both
+top_merged_upregulated_both <- top_merged |>
+  filter(log2FoldChange > threshold & avg_ratio > threshold)
+
+writeLines(top_merged_upregulated_both$uniprot_id, "top_merged_upregulated_both")
+
+#Grab downregulated in both
+top_merged_downregulated_both <- top_merged |>
+  filter(log2FoldChange < -threshold & avg_ratio < -threshold)
+
+writeLines(top_merged_downregulated_both$uniprot_id, "top_merged_downregulated_both.txt")
+
+#up trans down prot
+top_merged_up_trans_down_prot <- top_merged |>
+  filter(log2FoldChange > threshold & avg_ratio < -threshold)
+
+writeLines(top_merged_up_trans_down_prot$uniprot_id, "top_merged_up_trans_down_prot.txt")
+
+#down trans up prot
+top_merged_down_trans_up_prot <- top_merged |>
+  filter(log2FoldChange < -threshold & avg_ratio > threshold)
+
+#proteomics vs transcriptomics
+ggplot(top_merged, aes(x = avg_ratio, y = log2FoldChange)) +
+  geom_point(aes(size = sd_ratio, alpha = 1/lfcSE), color = "midnightblue") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+  # scale_x_continuous(limits = c(-1,1))+
+  # scale_y_continuous(limits = c(-1,1))+
+  theme_minimal() +
+  labs(
+    x = "Proteomics avg ratio",
+    y = "Transcriptomics log2 Fold Change",
+    title = "Proteomics vs Transcriptomics Changes",
+    size = "Proteomics SD",
+    alpha = "1 / Transcriptomics SE"
+  )
+
+top_merged_inverse <- top_merged |>
+  filter((avg_ratio_recalculated < -threshold & log2FoldChange > threshold) | (avg_ratio_recalculated > threshold & log2FoldChange < -threshold))
+
+
+top_merged_prop <- top_merged |>
+  filter((avg_ratio_recalculated > threshold & log2FoldChange > threshold) | (avg_ratio_recalculated < -threshold & log2FoldChange < -threshold))
+writeLines(top_merged_inverse$uniprot_id, "inverse_prot_ids.txt")
+```
+
+```{r}
+# #exploratory analysis
+# heatmap_data <- top_merged |>
+#   dplyr::select(gene_id, log2FoldChange, avg_ratio) |>
+#   column_to_rownames(var = "gene_id") |>  # Make gene_id the row names
+#   as.matrix()
+# 
+# pheatmap(heatmap_data,
+#          cluster_rows = TRUE,
+#          cluster_cols = FALSE, 
+#          color = colorRampPalette(c("dodgerblue3", "white", "firebrick3"))(100),
+#          main = "Transcriptomics vs Proteomics Changes",
+#          labels_col = c("Transcriptomics", "Proteomics"))
+# 
+# 
+# #map protein ids to KO ids
+# 
+# map_uniprot_to_ko <- function(uniprot_ids) {
+#   # Step 1: Convert UniProt to KEGG gene IDs
+#   conv_result <- keggConv("genes", "uniprot")
+# 
+#   # Create data frame: UniProt to KEGG gene ID
+#   conv_df <- data.frame(
+#     uniprot = sub("up:", "", names(conv_result)),
+#     kegg_gene = sub(":", ":", conv_result)
+#   )
+# 
+#   # Step 2: Filter for your UniProt IDs
+#   filtered_genes <- conv_df |> 
+#     filter(uniprot %in% uniprot_ids)
+# 
+#   # Step 3: Link KEGG gene IDs to KO terms
+#   all_links <- keggLink("ko", "genes")
+#   link_df <- data.frame(
+#     kegg_gene = sub("genes:", "", names(all_links)),
+#     KO = sub("ko:", "", all_links)
+#   )
+# 
+#   # Step 4: Merge mappings
+#   mapped <- filtered_genes |> 
+#     left_join(link_df, by = "kegg_gene")
+# 
+#   return(mapped)
+# }
+# kegg_mapped_genes_merged <- map_genes_to_ko(read_file('kos_up.txt'))
+# write.table(
+#   kegg_mapped_genes_merged,
+#   file = "kegg_mapped_genes_prot_up.txt",
+#   sep = "\t",        # tab separated
+#   row.names = FALSE, # do not write row numbers
+#   col.names = FALSE, # no header, KEGG expects no column names
+#   quote = FALSE      # do not add quotes
+# )
+
+```
+>>>>>>> Stashed changes
