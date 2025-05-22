@@ -96,17 +96,31 @@ plot
 genes_red<- nrow(transcriptomics_data[transcriptomics_data$padj < 0.05 & transcriptomics_data$log2FoldChange > 1, ])
 genes_blue <- nrow(transcriptomics_data[transcriptomics_data$padj < 0.05 & transcriptomics_data$log2FoldChange < -1, ])
 
+# Create subsets for upregulated and downregulated genes
+upregulated_genes <- subset(transcriptomics_data, color == "upregulated")
+downregulated_genes <- subset(transcriptomics_data, color == "downregulated")
+
+# Save the data frames to CSV files
+write.csv(upregulated_genes, "upregulated_genes.csv", row.names = FALSE)
+write.csv(downregulated_genes, "downregulated_genes.csv", row.names = FALSE)
+
 #ggsave("plot.png", plot = plot)
 ```
 
 
 ### MA plot ####
 ```{r}
-ggplot(transcriptomics_data, aes(x = log(baseMean), y = log2FoldChange)) +
-  geom_point(aes(color = padj > 0.01), alpha = 0.8, shape = 16, size = 0.8) +
-  scale_color_manual(values = c("red", "black")) +
+transcriptomics_data$significance <- with(transcriptomics_data, padj < 0.05 & (log2FoldChange > 1 | log2FoldChange < -1))
+
+# Now plot using the new column for colorin
+MA_plot <- ggplot(transcriptomics_data, aes(x = log(baseMean), y = log2FoldChange)) +
+  geom_point(aes(color = significance), alpha = 1, shape = 16, size = 1.2) +
+  scale_color_manual(values = c("black", "red"), labels = c( "Not Significant", "Significant")) +
   theme_minimal() +
-  labs(title = "MA Plot", x = "log10(mean expression)", y = "Log2(fold change)")
+  labs(x = "log10(mean expression)", y = "Log2(fold change)")
+
+ggsave("MA_plot.png", plot = MA_plot, width = 8, height = 5)
+MA_plot
 ```
 
 ### Stricter p-value adjustment: bonderroni correction ###
@@ -119,7 +133,10 @@ transcriptomics_data$padj_bonferroni <- p.adjust(transcriptomics_data$pvalue, me
 ```{r}
 proteomics_data <- read.csv('proteomics.csv')
 proteomics_data$log2FC_protein_avg <- rowMeans(proteomics_data[, c("log_ratio_1", "log_ratio_2", "log_ratio_3")], na.rm = TRUE)
-proteomics_data <- proteomics_data[!is.na(proteomics_data$log2FC_protein_avg), ]
+filtered_out_data <- proteomics_data[is.na(proteomics_data$avg_ratio), ]
+write.csv(filtered_out_data, file = "filtered_out_data.csv", row.names = FALSE)
+proteomics_data <- proteomics_data[!is.na(proteomics_data$avg_ratio), ]
+
 
 # filter the proteomics data 
 proteomics_data_f <- proteomics_data[proteomics_data$sd_ratio <= 2, ]
@@ -132,48 +149,107 @@ merged_data <- merge(transcriptomics_data, proteomics_data_f,
                      by.x = "uniprot_id", 
                      by.y = "protein")
 
+# obtain data with p > 0.05
+merged_data <- subset(merged_data, padj < 0.05)
+
 colors <- ifelse(
-  (merged_data$log2FoldChange > 1 & merged_data$log2FC_protein_avg > 1) |
-  (merged_data$log2FoldChange < -1 & merged_data$log2FC_protein_avg < -1),
+  (merged_data$log2FoldChange > 1 & merged_data$avg_ratio > 1) |
+  (merged_data$log2FoldChange < -1 & merged_data$avg_ratio < -1),
   "green", "blue"
 )
 
+
 # Make plot with thresholds 
-plot_p_t <- ggplot(merged_data, aes(x = log2FoldChange, y = log2FC_protein_avg)) +
+plot_p_t <- ggplot(merged_data, aes( x = avg_ratio, y = log2FoldChange)) +
   geom_point(aes(color = colors), size = 3) +
   scale_color_identity() + 
-  labs(x = "Transcriptomics Log2(FC)",
-       y = "Proteomics avarage log ratio",
+  labs(x = "Transcriptomics log2 fold change",
+       y = "Proteomics median log2 ratio",
        ) +
   theme_minimal() +
   geom_hline(yintercept = c(-1, 1), color = "gray", linetype = "dashed") +
   geom_vline(xintercept = c(-1, 1), color = "gray", linetype = "dashed") +
   geom_text_repel(data = merged_data[colors == "green", ], aes(label = gene_name), 
                   size = 5, box.padding = 0.2,max.overlaps = 4) +
-  theme(axis.title.x = element_text(size = 15),  axis.title.y = element_text(size = 15))
+  theme(axis.title.x = element_text(size = 15),  axis.title.y = element_text(size = 15), axis.text.x = element_text(size = 12), axis.text.y = element_text(size = 12))
 
 ggsave("plot_prot_trans.png", plot = plot_p_t)
 
 significant_genes <- merged_data[
-  (merged_data$log2FoldChange > 1 & merged_data$log2FC_protein_avg > 1) |
-  (merged_data$log2FoldChange < -1 & merged_data$log2FC_protein_avg < -1), ]
+  (merged_data$log2FoldChange > 1 & merged_data$avg_ratio> 1) |
+  (merged_data$log2FoldChange < -1 & merged_data$avg_ratio < -1), ]
 
 plot_p_t
 ```
 
 ```{r}
 
-library(umap)
+# Remove the protein names (they are not needed in the heatmap matrix)
+data_matrix <- proteomics_data_f|> select(log_ratio_1, log_ratio_2, log_ratio_3)
 
-# select columns for UMAP
-log_ratios <- proteomics_data_f[, c("log_ratio_1", "log_ratio_2", "log_ratio_3")]
-
-
-# Create UMAP
-log_ratios_clean <- na.omit(log_ratios)
-umap_result <- umap(log_ratios_clean)
-plot(umap_result$layout, main = "UMAP of Proteins", xlab = "UMAP1", ylab = "UMAP2", pch = 19)
-
+# Create the heatmap with dendrograms
+pheatmap(data_matrix,
+         scale = "row",                
+         clustering_distance_rows = "euclidean", 
+         clustering_method_rows = "complete",   
+         cluster_cols = FALSE, 
+         show_rownames = TRUE,          
+         show_colnames = TRUE,          
+         color = colorRampPalette(c("navy", "white", "firebrick3"))(50), 
+         main = "Heatmap with Dendrogram for Rows"
+)
 ```
 
+```{r}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("clusterProfiler")
+```
+
+```{r}
+BiocManager::install(c("org.Hs.eg.db", "KEGGREST", "AnnotationDbi"))
+
+gene_list <- c(
+  "syn:sll0944", "syn:slr0364", "syn:slr0366", "syn:sll0330", "syn:sll0021", 
+  "syn:slr0060", "syn:slr0061", "syn:slr0496", "syn:sll0688", "syn:sll0687",
+  "syn:sll0686", "syn:sll0685", "syn:sll0684", "syn:sll0683", "syn:sll0682",
+  "syn:sll0681", "syn:sll0680", "syn:sll0679", "syn:sll0615", "syn:slr0645",
+  "syn:slr0646", "syn:sll0185", "syn:sll0540", "syn:slr0096", "syn:slr0498", 
+  "syn:sll0471", "syn:sll0470", "syn:sll0595", "syn:sll0594", "syn:sll0290", 
+  "syn:sll0790", "syn:sll0789", "syn:sll0788", "syn:slr0701", "syn:slr0040", 
+  "syn:slr1119", "syn:ssr1853", "syn:sll1676", "syn:sll0656", "syn:sll0654",
+  "syn:slr1593", "syn:slr1594", "syn:slr1764", "syn:slr1908", "syn:slr1909", 
+  "syn:slr1910", "syn:slr1023", "syn:slr1379", "syn:slr1380", "syn:ssl2559", 
+  "syn:sll1296", "syn:sll1294", "syn:sll1293", "syn:sll1292", "syn:sll1291", 
+  "syn:slr1136", "syn:sll1722", "syn:slr1444", "syn:slr1368", "syn:ssl1633", 
+  "syn:slr0884", "syn:slr0885", "syn:slr1403", "syn:slr1407", "syn:slr1852", 
+  "syn:slr1853", "syn:slr1854", "syn:slr2132", "syn:sll1696", "syn:sll1695", 
+  "syn:slr0851", "syn:slr1246", "syn:slr1247", "syn:slr1248", "syn:slr1249", 
+  "syn:slr1250", "syn:slr1251", "syn:slr1259", "syn:slr1260", "syn:slr1261", 
+  "syn:slr1262", "syn:ssl3692", "syn:slr1993", "syn:slr1994", "syn:sll1612", 
+  "syn:sll1611", "syn:sll1224", "syn:sll1223", "syn:sll1221", "syn:sll1220", 
+  "syn:sll1251", "syn:sll1374", "syn:sll1085", "syn:sll1566", "syn:slr1675", 
+  "syn:sll1557", "syn:sll0428", "syn:sll0261", "syn:sll1853", "syn:sll1852", 
+  "syn:slr0994", "syn:sll1330", "syn:slr1556", "syn:sll1483", "syn:slr0753", 
+  "syn:sll0723", "syn:sll0722", "syn:sll0721", "syn:sll0720", "syn:sll1552", 
+  "syn:slr1651", "syn:ssr2786", "syn:ssl0832", "syn:slr0462", "syn:sll1106", 
+  "syn:slr1192", "syn:slr0600", "syn:slr0607", "syn:slr0608", "syn:sll5006", 
+  "syn:ssl5039", "syn:slr5055", "syn:slr5085", "syn:sll5089", "syn:sll5090", 
+  "syn:slr5093", "syn:sll5122", "syn:sll5123", "syn:sll8018", "syn:slr6004", 
+  "syn:slr6064", "syn:slr6065", "syn:slr6067", "syn:sll6069", "syn:ssl6077", 
+  "syn:slr6039", "syn:slr6040", "syn:slr6041", "syn:slr6042", "syn:slr6043", 
+  "syn:slr6045", "syn:sll6052", "syn:sll6053", "syn:sll6054", "syn:sll6055", 
+  "syn:slr6056", "syn:slr6063", "syn:slr6065", "syn:slr6066", "syn:slr6067", 
+  "syn:sll6069", "syn:ssl6077", "syn:slr6091"
+)
+
+library(clusterProfiler)
+
+# KEGG enrichment analysis for Synechocystis
+enrich_result <- enrichKEGG(gene = gene_list, organism = "syc")
+
+# View top pathways
+head(enrich_result)
+```
 
